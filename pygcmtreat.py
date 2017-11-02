@@ -24,7 +24,7 @@ import time
 
     Nous pouvons ici tenir compte de la rotation de l'exoplanete ou d'une eventuelle obliquite.
 
-    Version : 6.0
+    Version : 6.2
 
     Recentes mises a jour :
 
@@ -57,22 +57,32 @@ import time
 
     Date de derniere modification : 14.09.2016
 
-    >> Modification de dx_correspondance, les distances calculees sont desormais plus precises que jamais et decoupent
-    reellement le chemin optique en deux pour s'abstenir des problemes aux poles
-    >> Cette meme fonction peut desormais integrer sur le chemin optique des rayons la profondeur optique (divisee de
-    la section efficace toutefois), nous ne tenons pas compte d'une eventuelle dependance de la fraction molaire ou de
-    la section efficace avec l'altitude. Pour que cette hypothese reste valable, le pas en altitude doit etre bien
-    inferieur a la hauteur d'echelle
-    >> Desormais, chaque changement d'altitude, de longitude ou de latitude est traite de maniere independante, on notera
-    que l'integrale diverse pour les variations d'altitude tres tres faibles (ce qui arrive typiquement lorsque les
-    rayons traversent des coins de cellule spherique ou couramment pour les terminateurs aux poles)
-    >> Cette ecriture est bien adaptee au cas Middle, il l'est moins si cette option est False
-    >> Bien que conservees, les fonctions altitude_array ne sont plus appelees dans le transfert radiatif
-    >> Modification dans la construction du profil P-T cylindrique, la loi hydrostatique a ete reecrite
-    >> Une verification serait cependant avisee pour etre certain que cette reecriture ne s'eloigne pas de celle attendue
-    (par exemple, cas isotherme)
+    >> Modification complete de boxes, les fonctions d'interpolation sont predefinies desormais dans pyfunction,
+    >> Correction d'un bug qui ne permettait pas de retenir convenablement les indices d'interpolations sur la
+    temperature dans du recast. La pression et les compositions ne correspondaient alors plus du tout. (le first ne
+    permettait le precalcul enregistre que de coeff1 et coeff5 mais pas de i_Tu ou i_Qu).
+    >> Optimisation de egalement lors des calculs de composition, nous nous assurons bien que la somme des fractions
+    molaires soit toujours egale a 1 sans etre biaisee par les etapes d'interpolation.
 
-    Date de derniere modification : 12.12.2016
+    Date de derniere modification : 17.05.2017
+
+    >> Plusieurs options ont ete rajoutees, la possibilite notamment de raisonner en termes de nombre de couche et non
+    plus en epaisseur de couche (on defini un nombre de couche fixe, et une fois que le toit de l'atmosphere est calcule
+    on en deduit l'epaisseur de chaque couche), la multiplicite des options de toit atmospherique (desormais nous pouvons
+    proposer une estimation du toit atmospherique defini en pression comme une altitude limite, et ce a partir de la
+    connaissance des proprietes moyennes du toit du modele ou de ses proprietes extremes : 'Mean' on calcule une hauteur
+    d'echelle moyenne du toit du modele et dans l'hypothese que l'extrapolation est bien isotherme, on en deduit une
+    altitude correspondant a la pression P_h d'entree. 'Down' on fait la meme chose mais on cherche le point pour lequel
+    la hauteur d'echelle est maximale, donc P_h va correspondre non pas au toit mais la pression maximale en toit que l
+    on souhaite avoir, 'Up' on utilise le point ou la hauteur d'echelle est la plus faible et P_h correspond donc a la
+    pression minimale que l'on souhaite avoir), et correction d'un bug dans le calcul du toit en altitude.
+    >> L'epaisseur atmospherique est arrondie a la centaine afin d'eviter un bug dans la fonction dx_correspondance. Elle
+    ne reconnaissait pas r_step/2. si r_step etait trop complique. Il est a noter qu'on evitera si possible les nombres
+    de couche trop petits ou trop complexes : le mimimum etant la resolution maximale de la simulation, si c'est une
+    48x64x50, 100 couches est une resolution raisonnable, mais on evitera 101, 97 couches par exemple.
+    >> L'introduction d'une option n_layers a donne lieu a l'ecriture de la version NBoxes.
+
+    Date de derniere modification : 29.10.2017
 
 """
 
@@ -80,11 +90,13 @@ import time
 ########################################################################################################################
 
 
-def Boxes_spheric_data(data,t,c_species,Surf=True,Marker=False,Clouds=False,TimeSelec=False) :
+def Boxes_spheric_data(data,t,c_species,m_species,Surf=True,Tracer=False,Clouds=False,TimeSelec=False) :
 
     file = Dataset("%s.nc"%(data))
     variables = file.variables
     c_number = c_species.size
+    if Tracer == True :
+        m_species = m_species[0]
 
     # Si nous avons l'information sur les parametres de surface
 
@@ -95,82 +107,80 @@ def Boxes_spheric_data(data,t,c_species,Surf=True,Marker=False,Clouds=False,Time
 
         if TimeSelec == False :
             T_file = variables["temp"][:]
-            a,b,c,d = np.shape(T_file)
+            n_t,n_l,n_lat,n_long = np.shape(T_file)
             T_surf = variables["tsurf"][:]
             P_file = variables["p"][:]
             P_surf = variables["ps"][:]
-            P = np.zeros((a,b+1,c,d),dtype=np.float64)
-            T = np.zeros((a,b+1,c,d),dtype=np.float64)
+            P = np.zeros((n_t,n_l+1,n_lat,n_long),dtype=np.float64)
+            T = np.zeros((n_t,n_l+1,n_lat,n_long),dtype=np.float64)
         else :
             T_prefile = variables["temp"][:]
-            a,b,c,d = np.shape(T_prefile)
-            T_file = np.zeros((1,b,c,d))
-            T_surf = np.zeros((1,c,d))
-            P_file = np.zeros((1,b,c,d))
-            P_surf = np.zeros((1,c,d))
+            n_t,n_l,n_lat,n_long = np.shape(T_prefile)
+            T_file = np.zeros((1,n_l,n_lat,n_long),dtype=np.float64)
+            T_surf = np.zeros((1,n_lat,n_long),dtype=np.float64)
+            P_file = np.zeros((1,n_l,n_lat,n_long),dtype=np.float64)
+            P_surf = np.zeros((1,n_lat,n_long),dtype=np.float64)
             T_file[0] = variables["temp"][t,:,:,:]
             T_surf[0] = variables["tsurf"][t,:,:]
             P_file[0] = variables["p"][t,:,:,:]
             P_surf[0] = variables["ps"][t,:,:]
-            P = np.zeros((1,b+1,c,d),dtype=np.float64)
-            T = np.zeros((1,b+1,c,d),dtype=np.float64)
+            P = np.zeros((1,n_l+1,n_lat,n_long),dtype=np.float64)
+            T = np.zeros((1,n_l+1,n_lat,n_long),dtype=np.float64)
 
         P[:,0,:,:] = P_surf
-        P[:,1:b+1,:,:] = P_file
+        P[:,1:n_l+1,:,:] = P_file
         T[:,0,:,:] = T_surf
-        T[:,1:b+1,:,:] = T_file
+        T[:,1:n_l+1,:,:] = T_file
 
-        if Marker == True :
+        if Tracer == True :
             if TimeSelec == False :
-                h2o_vap = variables["h2o_vap"][:]
-                h2o_vap_surf = variables["h2o_vap_surf"][:]
-                h2o = np.zeros((a,b+1,c,d),dtype=np.float64)
+                Q_vap = variables["%s_vap"%(m_species)][:]
+                Q_vap_surf = variables["%s_vap_surf"%(m_species)][:]
+                Q = np.zeros((n_t,n_l+1,n_lat,n_long),dtype=np.float64)
 
             else :
-                h2o_vap = np.zeros((1,b,c,d),dtype=np.float64)
-                h2o_vap_surf = np.zeros((1,c,d),dtype=np.float64)
-                h2o_vap[0] = variables["h2o_vap"][t,:,:,:]
-                h2o_vap_surf[0] = variables["h2o_vap_surf"][t,:,:]
-                h2o = np.zeros((1,b+1,c,d),dtype=np.float64)
+                Q_vap = np.zeros((1,n_l,n_lat,n_long))
+                Q_vap_surf = np.zeros((1,n_lat,n_long))
+                Q_vap[0] = variables["%s_vap"%(m_species)][t,:,:,:]
+                Q_vap_surf[0] = variables["%s_vap_surf"%(m_species)][t,:,:]
+                Q = np.zeros((1,n_l+1,n_lat,n_long),dtype=np.float64)
 
-            h2o[:,0,:,:] = h2o_vap_surf
-            h2o[:,1:b+1,:,:] = h2o_vap
+            Q[:,0,:,:] = Q_vap_surf
+            Q[:,1:n_l+1,:,:] = Q_vap
 
         else :
-            h2o = np.array([])
+            Q = np.array([])
 
         if Clouds == True :
             if TimeSelec == False :
-                gen_cond = np.zeros((c_number,a,b,c,d),dtype=np.float64)
-                gen_cond_surf = np.zeros((c_number,a,c,d),dtype=np.float64)
+                gen_cond = np.zeros((c_number,n_t,n_l,n_lat,n_long),dtype=np.float64)
+                gen_cond_surf = np.zeros((c_number,n_t,n_lat,n_long),dtype=np.float64)
                 for c_num in range(c_number) :
                     gen_cond_surf[c_num,:,:,:] = variables["%s_surf"%(c_species[c_num])][:]
                     gen_cond[c_num,:,:,:,:] = variables["%s"%(c_species[c_num])][:]
-                gen = np.zeros((c_species.size,a,b+1,c,d),dtype=np.float64)
+                gen = np.zeros((c_species.size,n_t,n_l+1,n_lat,n_long))
             else :
-                gen_cond = np.zeros((c_number,1,b,c,d),dtype=np.float64)
-                gen_cond_surf = np.zeros((c_number,1,c,d),dtype=np.float64)
+                gen_cond = np.zeros((c_number,1,n_l,n_lat,n_long),dtype=np.float64)
+                gen_cond_surf = np.zeros((c_number,1,n_lat,n_long),dtype=np.float64)
                 for c_num in range(c_number) :
                     gen_cond_surf[c_num,:,:,:] = variables["%s_surf"%(c_species[c_num])][t,:,:]
                     gen_cond[c_num,:,:,:,:] = variables["%s"%(c_species[c_num])][t,:,:,:]
-                gen = np.zeros((c_species.size,1,b+1,c,d),dtype=np.float64)
+                gen = np.zeros((c_species.size,1,n_l+1,n_lat,n_long),dtype=np.float64)
 
             gen[:,:,0,:,:] = gen_cond_surf
-            gen[:,:,1:b+1,:,:] = gen_cond
+            gen[:,:,1:n_l+1,:,:] = gen_cond
         else :
             gen = np.array([])
 
         if TimeSelec == True :
-            a = 1
-        T_mean = np.nansum(T_file[:,b-1,:,:])/(a*c*d)
-        T_max = np.amax(T_file[:,b-1,:,:])
-        T_min = np.amin(T_file[:,b-1,:,:])
+            n_t = 1
+        T_mean = np.nansum(T_file[:,n_l-1,:,:])/(n_t*n_lat*n_long)
+        T_max = np.amax(T_file[:,n_l-1,:,:])
+        T_min = np.amin(T_file[:,n_l-1,:,:])
         print('Mean temperature : %i K, Maximal temperature : %i K, Minimal temperature : %i K'%(T_mean,T_max,T_min))
 
-        P_mean = np.nansum(P_file[:,b-1,:,:])/(a*c*d)
+        P_mean = np.exp(np.nansum(np.log(P[:,n_l-1,:,:]))/(n_t*n_lat*n_long))
         print('Mean roof pressure : %f Pa'%(P_mean))
-
-        b = b + 1
 
     # Si nous n'avons pas l'information sur les parametres de surface
 
@@ -178,722 +188,122 @@ def Boxes_spheric_data(data,t,c_species,Surf=True,Marker=False,Clouds=False,Time
 
         if TimeSelec == False :
             T = variables["temp"][:]
-            T = np.array(T,dtype = np.float64)
-            a,b,c,d = np.shape(T)
+            n_t,n_l,n_lat,n_long = np.shape(T)
             P = variables["p"][:]
-            P = np.array(P,dtype = np.float64)
         else :
             T_prefile = variables["temp"][:]
-            a,b,c,d = np.shape(T_prefile)
-            T = np.zeros((1,b,c,d),dtype=np.float64)
-            P = np.zeros((1,b,c,d),dtype=np.float64)
+            n_t,n_l,n_lat,n_long = np.shape(T_prefile)
+            T = np.zeros((1,n_l,n_lat,n_long),dtype=np.float64)
+            P = np.zeros((1,n_l,n_lat,n_long),dtype=np.float64)
             T[0] = variables["temp"][t,:,:,:]
             P[0] = variables["p"][t,:,:,:]
 
-        if Marker == True :
+        if Tracer == True :
             if TimeSelec == False :
-                h2o = variables["h2o_vap"][:]
-                h2o = np.array(h2o,dtype=np.float64)
+                Q = variables["%s_vap"%(m_species)][:]
             else :
-                h2o = np.zeros((1,b,c,d),dtype=np.float64)
-                h2o[0] = variables["h2o_vap"][t,:,:,:]
+                Q = np.zeros((1,n_l,n_lat,n_long))
+                Q[0] = variables["%s_vap"%(m_species)][t,:,:,:]
         else :
-            h2o = np.array([])
+            Q = np.array([])
 
         if Clouds == True :
             if TimeSelec == False :
-                gen = np.zeros((c_number,a,b,c,d),dtype=np.float64)
+                gen = np.zeros((c_number,n_t,n_l,n_lat,n_long))
                 for c_num in range(c_number) :
                     gen[c_num,:,:,:,:] = variables["%s"%(c_species[c_num])][:]
             else :
-                gen = np.zeros((c_number,1,b,c,d),dtype=np.float64)
+                gen = np.zeros((c_number,1,n_l,n_lat,n_long))
                 for c_num in range(c_number) :
                     gen[c_num,:,:,:,:] = variables["%s"%(c_species[c_num])][t,:,:,:]
         else :
             gen = np.array([])
 
         if TimeSelec == True :
-            a = 1
-        T_mean = np.nansum(T[:,b-1,:,:]/(a*c*d))
-        T_max = np.amax(T[:,b-1,:,:])
-        T_min = np.amin(T[:,b-1,:,:])
+            n_t = 1
+        T_mean = np.nansum(T[:,n_l-1,:,:]/(n_t*n_lat*n_long))
+        T_max = np.amax(T[:,n_l-1,:,:])
+        T_min = np.amin(T[:,n_l-1,:,:])
         print('Mean temperature : %i K, Maximal temperature : %i K, Minimal temperature of the high atmosphere : %i K'\
               %(T_mean,T_max,T_min))
+        T_var = np.array([T_mean,T_max,T_min])
 
-        P_mean = np.nansum(P[:,b-1,:,:])/(a*c*d)
+        P_mean = np.exp(np.nansum(np.log(P[:,n_l-1,:,:]))/(n_t*n_lat*n_long))
         print('Mean roof pressure : %f Pa'%(P_mean))
 
-    return P, T, h2o, gen
+    return P, T, Q, gen, T_var
 
 
 ########################################################################################################################
 ########################################################################################################################
 
 
-def Boxes_interlopation(P,T,h2o,Rp,g0,M_atm,number,P_comp,T_comp,Q_comp,species,x_species,M_species,c_species,ratio,\
-                        Marker=False,Clouds=False,Composition=False,LogInterp=False) :
+def Boxes_interlopation(P,T,Q,Rp,g0,M_atm,number,P_comp,T_comp,Q_comp,species,x_species,M_species,c_species,ratio,\
+                        Tracer=False,Clouds=False,Composition=False,LogInterp=False) :
 
-    a, b, c, d = np.shape(P)
-    z = np.zeros((a,b,c,d),dtype=np.float64)
-    M = np.zeros((a,b,c,d),dtype=np.float64)
+    n_t,n_l,n_lat,n_long = np.shape(P)
+    z = np.zeros((n_t,n_l,n_lat,n_long),dtype=np.float64)
+    M = np.zeros((n_t,n_l,n_lat,n_long),dtype=np.float64)
 
-    if Marker == False :
+    if Tracer == False :
 
-        if Composition == True :
+        size = species.size
+        compo = np.zeros((size,n_t,n_l,n_lat,n_long),dtype=np.float64)
 
-            size = species.size
+        if LogInterp == True :
 
-            compo = np.zeros((size,a,b,c,d),dtype=np.float64)
+            P_comp = np.log10(P_comp)
 
-            if LogInterp == True :
+        for i in range(n_t) :
+            for j in range(n_l) :
+                for k in range(n_lat) :
 
-                P_comp = np.log10(P_comp)
+                    if LogInterp == True :
+                        res, c_grid, i_grid = interp2olation_multi(np.log10(P[i,j,k,:]),T[i,j,k,:],P_comp,T_comp,x_species)
+                    else :
+                        res, c_grid, i_grid = interp2olation_multi(P[i,j,k,:],T[i,j,k,:],P_comp,T_comp,x_species)
 
-            for i in range(a) :
-
-                for j in range(b) :
-
-                    for k in range(c) :
-
-                        for l in range(d) :
-
-                            if LogInterp == True :
-
-                                wh, = np.where(P_comp >= np.log10(P[i,j,k,l]))
-
-                            else :
-
-                                wh, = np.where(P_comp >= P[i,j,k,l])
-
-                            if wh.size != 0 :
-
-                                # P < P_max
-
-                                i_Pu = wh[0]
-                                i_Pd = i_Pu - 1
-
-                                if LogInterp == True :
-
-                                    P_ref = np.log10(P[i,j,k,l])
-
-                                else :
-
-                                    P_ref = P[i,j,k,l]
-
-                                whT, = np.where(T_comp >= T[i,j,k,l])
-
-                                if whT.size != 0  :
-
-                                    # T < T_max
-
-                                    i_Tu = whT[0]
-                                    i_Td = i_Tu - 1
-
-                                    T_ref = T[i,j,k,l]
-
-                                    if i_Pu == 0 and i_Tu == 0 :
-
-                                        # Si P <= P_min et T <= T_min alors on considere T = T_min et P = P_min
-
-                                        compo[:,i,j,k,l] = x_species[:,0,0]
-
-                                    else :
-
-                                        if i_Pu == 0 :
-
-                                            # Si P <= P_min alors on considere P = P_min, interpolation sur T
-
-                                            coeff1 = (T_ref - T_comp[i_Td])/(T_comp[i_Tu] - T_comp[i_Td])
-                                            coeff2 = 1. - coeff1
-
-                                            compo[2:size,i,j,k,l] = coeff1*x_species[2:size,0,i_Tu] + coeff2*x_species[2:size,0,i_Td]
-
-                                        else :
-
-                                            if i_Tu == 0 :
-
-                                                # Si T <= T_min alors on considere T = T_min, interpolation sur P
-
-                                                coeff3 = (P_ref - P_comp[i_Pd])/(P_comp[i_Pu] - P_comp[i_Pd])
-                                                coeff4 = 1. - coeff3
-
-                                                compo[2:size,i,j,k,l] = coeff3*x_species[2:size,i_Pu,0] + coeff4*x_species[2:size,i_Pd,0]
-
-                                            else :
-
-                                                # Si P entre P_min et P_max et T entre T_min et T_max, double interpolation
-
-                                                coeff1 = (T_ref - T_comp[i_Td])/(T_comp[i_Tu] - T_comp[i_Td])
-                                                coeff2 = 1. - coeff1
-                                                coeff3 = (P_ref - P_comp[i_Pd])/(P_comp[i_Pu] - P_comp[i_Pd])
-                                                coeff4 = 1. - coeff3
-                                                c14,c13,c24,c23 = coeff1*coeff4,coeff1*coeff3,coeff2*coeff4,coeff2*coeff3
-
-                                                compo1 = c14*x_species[2:size,i_Pd,i_Tu] + c24*x_species[2:size,i_Pd,i_Td]
-                                                compo2 = c13*x_species[2:size,i_Pu,i_Tu] + c23*x_species[2:size,i_Pu,i_Td]
-                                                compo[2:size,i,j,k,l] = compo2 + compo1
-
-                                        compo[0,i,j,k,l] = (1 - np.nansum(compo[2:size,i,j,k,l]))/(ratio + 1.)
-                                        compo[1,i,j,k,l] = compo[0,i,j,k,l]*ratio
-
-                                else :
-
-                                    # Si T >= T_max alors on considere T = T_max
-
-                                    i_T = T_comp.size - 1
-
-                                    if i_Pu == 0 :
-
-                                        # Si P <= P_min alors on considere P = P_min, pas d'interpolation
-
-                                        compo[2:size,i,j,k,l] = x_species[2:size,0,i_T]
-
-                                    else :
-
-                                        # Si P entre P_min et P_max, interpolation sur P
-
-                                        coeff3 = (P_ref - P_comp[i_Pd])/(P_comp[i_Pu] - P_comp[i_Pd])
-                                        coeff4 = 1. - coeff3
-
-                                        compo[2:size,i,j,k,l] = coeff3*x_species[2:size,i_Pu,i_T] + coeff4*x_species[2:size,i_Pd,i_T]
-
-                            else :
-
-                                # Si P > P_max alors on considere P = P_max
-
-                                i_P = P_comp.size - 1
-
-                                whT, = np.where(T_comp >= T[i,j,k,l])
-
-                                if whT.size != 0  :
-
-                                    # Si T <= T_max
-
-                                    i_Tu = whT[0]
-                                    i_Td = i_Tu - 1
-
-                                    T_ref = T[i,j,k,l]
-
-                                    if i_Tu == 0 :
-
-                                        # Si T < T_min alors on considere T = T_min
-
-                                        compo[:,i,j,k,l] = x_species[:,i_P,0]
-
-                                    else :
-
-                                        # Si T compris entre T_min et T_max alors interpolation sur T
-
-                                        coeff1 = (T_ref - T_comp[i_Td])/(T_comp[i_Tu] - T_comp[i_Td])
-                                        coeff2 = 1. - coeff1
-
-                                        compo[2:size,i,j,k,l] = coeff1*x_species[2:size,i_P,i_Tu] + coeff2*x_species[2:size,i_P,i_Td]
-                                        compo[0,i,j,k,l] = (1. - np.nansum(compo[2:size,i,j,k,l]))/(ratio + 1.)
-                                        compo[1,i,j,k,l] = compo[0,i,j,k,l]*ratio
-
-                                else :
-
-                                    # Si T > T_max alors on considere T = T_max
-
-                                    i_T = T_comp.size - 1
-
-                                    compo[:,i,j,k,l] = x_species[:,i_P,i_T]
-
-                            # Si nous preferons travailler a poids moleculaire constant, Exit = False empeche le calcul
-                            # du poids moleculaire sur chacune des cellules
-
-                            M[i,j,k,l] = np.nansum(compo[:,i,j,k,l]*M_species)
+                    compo[2:size,i,j,k,:] = res[2:]
+                    for l in range(n_long) :
+                        compo[0,i,j,k,l] = (1. - np.nansum(compo[2:size,i,j,k,l]))/(ratio + 1.)
+                    compo[1,i,j,k,:] = compo[0,i,j,k,:]*ratio
+                    M[i,j,k,:] = np.dot(M_species,compo[:,i,j,k,:])
 
     else :
 
-        if Composition == True :
+        size = species.size
+        compo = np.zeros((size,n_t,n_l,n_lat,n_long),dtype=np.float64)
 
-            size = species.size
+        if LogInterp == True :
 
-            compo = np.zeros((size,a,b,c,d))
+            P_comp = np.log10(P_comp)
 
-            for i in range(a) :
+        for i in range(n_t) :
+            for j in range(n_l) :
+                for k in range(n_lat) :
 
-                for j in range(b) :
+                    if LogInterp == True :
+                        res, c_grid, i_grid = interp3olation_multi(np.log10(P[i,j,k,:]),T[i,j,k,:],Q[i,j,k,:],P_comp,T_comp,Q_comp,x_species)
+                    else :
+                        res, c_grid, i_grid = interp3olation_multi(P[i,j,k,:],T[i,j,k,:],Q[i,j,k,:],P_comp,T_comp,Q_comp,x_species)
 
-                    for k in range(c) :
+                    compo[2:size,i,j,k,:] = res[2:]
+                    for l in range(n_long) :
+                        compo[0,i,j,k,l] = (1. - np.nansum(compo[2:size,i,j,k,l]))/(ratio + 1.)
+                    compo[1,i,j,k,:] = compo[0,i,j,k,:]*ratio
+                    M[i,j,k,:] = np.dot(M_species,compo[:,i,j,k,:])
 
-                        for l in range(d) :
-
-                            wh, = np.where(P_comp >= P[i,j,k,l])
-
-                            if wh.size != 0 :
-
-                                # Si P <= P_max
-
-                                i_Pu = wh[0]
-                                i_Pd = i_Pu - 1
-
-                                P_ref = P[i,j,k,l]
-
-                                whT, = np.where(T_comp >= T[i,j,k,l])
-
-                                if whT.size != 0  :
-
-                                    # Si T <= T_max
-
-                                    i_Tu = whT[0]
-                                    i_Td = i_Tu - 1
-
-                                    T_ref = T[i,j,k,l]
-
-                                    whQ, = np.where(Q_comp >= h2o[i,j,k,l])
-
-                                    if whQ.size != 0 :
-
-                                        # Si Q <= Q_max
-
-                                        i_Qu = whQ[0]
-                                        i_Qd = i_Qu - 1
-
-                                        Q_ref = h2o[i,j,k,l]
-
-                                        if i_Pu == 0 and i_Tu == 0 and i_Qu == 0 :
-
-                                            # Si T <= T_min, P <= P_min et Q <= Q_min alors on considere T = T_min,
-                                            # P = P_min et Q = Q_min
-
-                                            compo[:,i,j,k,l] = x_species[:,0,0,0]
-
-                                        else :
-
-                                            if i_Pu == 0 :
-
-                                                # Si P <= P_min
-
-                                                if i_Tu != 0 and i_Qu != 0 :
-
-                                                    # Si T et Q sont compris entre T_min et T_max ou Q_min et Q_max alors
-                                                    # double interpolaton sur T et Q
-
-                                                    coeff1 = (T_ref - T_comp[i_Td])/(T_comp[i_Tu] - T_comp[i_Td])
-                                                    coeff2 = 1. - coeff1
-                                                    coeff5 = (Q_ref - Q_comp[i_Qd])/(Q_comp[i_Qu] - Q_comp[i_Qd])
-                                                    coeff6 = 1. - coeff5
-                                                    c16,c15,c26,c25 = coeff1*coeff6,coeff1*coeff5,coeff2*coeff6,coeff2*coeff5
-
-                                                    compo1 = c15*x_species[2:size,0,i_Tu,i_Qu] + c25*x_species[2:size,0,i_Td,i_Qu]
-                                                    compo2 = c16*x_species[2:size,0,i_Tu,i_Qd] + c26*x_species[2:size,0,i_Td,i_Qd]
-                                                    compo[2:size,i,j,k,l] = compo1 + compo2
-
-                                                else :
-
-                                                    if i_Qu == 0 :
-
-                                                        # Si Q <= Q_min alors on considere Q = Q_min et on effectue une
-                                                        # interpolation sur T
-
-                                                        coeff1 = (T_ref - T_comp[i_Td])/(T_comp[i_Tu] - T_comp[i_Td])
-                                                        coeff2 = 1. - coeff2
-
-                                                        compo[2:size,i,j,k,l] = coeff1*x_species[2:size,0,i_Tu,0] + coeff2*x_species[2:size,0,i_Td,0]
-
-                                                    if i_Tu == 0 :
-
-                                                        # Si T <= T_min alors on considere T = T_min et on effectue une
-                                                        # interpolation sur Q
-
-                                                        coeff5 = (Q_ref - Q_comp[i_Qd])/(Q_comp[i_Qu] - Q_comp[i_Qd])
-                                                        coeff6 = 1. - coeff5
-
-                                                        compo[2:size,i,j,k,l] = coeff5*x_species[2:size,0,0,i_Qu] + coeff6*x_species[2:size,0,0,i_Qd]
-
-                                                compo[0,i,j,k,l] = (1 - np.nansum(compo[2:size,i,j,k,l]))/(ratio + 1.)
-                                                compo[1,i,j,k,l] = compo[0,i,j,k,l]*ratio
-
-                                            else :
-
-                                                # Si P est compris entre P_min et P_max alors interpolation sur P
-
-                                                coeff3 = (P_ref - P_comp[i_Pd])/(P_comp[i_Pu] - P_comp[i_Pd])
-                                                coeff4 = 1. - coeff3
-
-                                                if i_Tu == 0 and i_Qu != 0 :
-
-                                                    # Si T <= T_min alors on considere T = T_min et on effectue une
-                                                    # interpolation sur Q
-
-                                                    coeff5 = (Q_ref - Q_comp[i_Qd])/(Q_comp[i_Qu] - Q_comp[i_Qd])
-                                                    coeff6 = 1. - coeff5
-                                                    c36,c35,c46,c45 = coeff3*coeff6,coeff3*coeff5,coeff4*coeff6,coeff4*coeff5
-
-                                                    compo1 = c35*x_species[2:size,i_Pu,0,i_Qu] + c45*x_species[2:size,i_Pd,0,i_Qu]
-                                                    compo2 = c36*x_species[2:size,i_Pu,0,i_Qd] + c46*x_species[2:size,i_Pd,0,i_Qd]
-                                                    compo[2:size,i,j,k,l] = compo1 + compo2
-
-                                                if i_Qu == 0 and i_Tu != 0 :
-
-                                                    # Si Q <= Q_min alors on considere Q = Q_min et on effectue une
-                                                    # interpolation sur T
-
-                                                    coeff1 = (T_ref - T_comp[i_Td])/(T_comp[i_Tu] - T_comp[i_Td])
-                                                    coeff2 = 1. - coeff1
-                                                    c14,c13,c24,c23 = coeff1*coeff4,coeff1*coeff3,coeff2*coeff4,coeff2*coeff3
-
-                                                    compo1 = c13*x_species[2:size,i_Pu,i_Tu,0] + c23*x_species[2:size,i_Pu,i_Td,0]
-                                                    compo2 = c14*x_species[2:size,i_Pd,i_Tu,0] + c24*x_species[2:size,i_Pd,i_Td,0]
-                                                    compo[2:size,i,j,k,l] = compo1 + compo2
-
-                                                if i_Qu == 0  and i_Tu == 0 :
-
-                                                    # Si T <= T_min et Q <= Q_min alors considere T = T_min et Q = Q_min
-
-                                                    compo[2:size,i,j,k,l] = coeff3*x_species[2:size,i_Pu,0,0] + coeff4*x_species[2:size,i_Pd,0,0]
-
-                                                if i_Qu != 0 and i_Pu != 0 :
-
-                                                    # Si T et Q sont egalement compris entre respectivement T_min et T_max et
-                                                    # Q_min et Q_max, alors triple interpolation sur P, T et Q
-                                                    # Cette formulation est la plus generale et celle qui est vraiment susceptible
-                                                    # d'intervenir dans les calculs de composition, les encadrements sur P, T et Q
-                                                    # etant choisis en fonction de la simulation
-
-                                                    coeff1 = (T_ref - T_comp[i_Td])/(T_comp[i_Tu] - T_comp[i_Td])
-                                                    coeff2 = 1. - coeff1
-                                                    coeff5 = (Q_ref - Q_comp[i_Qd])/(Q_comp[i_Qu] - Q_comp[i_Qd])
-                                                    coeff6 = 1. - coeff5
-                                                    c315,c415,c316,c416 = coeff3*coeff1*coeff5,coeff4*coeff1*coeff5,\
-                                                                          coeff3*coeff1*coeff6,coeff4*coeff1*coeff6
-                                                    c325,c425,c326,c426 = coeff3*coeff2*coeff5,coeff4*coeff2*coeff5,\
-                                                                          coeff3*coeff2*coeff6,coeff4*coeff2*coeff6
-
-                                                    compo1 = c315*x_species[2:size,i_Pu,i_Tu,i_Qu] + c415*x_species[2:size,i_Pd,i_Tu,i_Qu]
-                                                    compo2 = c316*x_species[2:size,i_Pu,i_Tu,i_Qd] + c416*x_species[2:size,i_Pd,i_Tu,i_Qd]
-                                                    compo3 = c325*x_species[2:size,i_Pu,i_Td,i_Qu] + c425*x_species[2:size,i_Pd,i_Td,i_Qu]
-                                                    compo4 = c326*x_species[2:size,i_Pu,i_Td,i_Qd] + c426*x_species[2:size,i_Pd,i_Td,i_Qd]
-                                                    compo[2:size,i,j,k,l] = compo1 + compo2 + compo3 + compo4
-
-                                                compo[0,i,j,k,l] = (1 - np.nansum(compo[2:size,i,j,k,l]))/(ratio + 1.)
-                                                compo[1,i,j,k,l] = compo[0,i,j,k,l]*ratio
-
-                                    else :
-
-                                        # Si Q > Q_max alors on considere Q = Q_max
-
-                                        i_Q = Q_comp.size - 1
-
-                                        if i_Pu == 0 :
-
-                                            # Si P <= P_min alors on considere P = P_min
-
-                                            if i_Tu == 0 :
-
-                                                # Si T <= T_min alors on considere T = T_min
-
-                                                compo[:,i,j,k,l] = x_species[:,0,0,i_Q]
-
-                                            else :
-
-                                                # Si T est compris entre T_min et T_max alors interpolation sur T
-
-                                                coeff1 = (T_ref - T_comp[i_Td])/(T_comp[i_Tu] - T_comp[i_Td])
-                                                coeff2 = 1. - coeff1
-
-                                                compo[2:size,i,j,k,l] = coeff1*x_species[2:size,0,i_Tu,i_Q] + coeff2*x_species[2:size,0,i_Td,i_Q]
-
-                                        else :
-
-                                            # Si P est compris entre P_min et P_max alors interpolation sur P
-
-                                            coeff3 = (P_ref - P_comp[i_Pd])/(P_comp[i_Pu] - P_comp[i_Pd])
-                                            coeff4 = 1. - coeff3
-
-                                            if i_Tu == 0 :
-
-                                                # Si T <= T_min alors on considere T = T_min
-
-                                                compo[2:size,i,j,k,l] = coeff3*x_species[2:size,i_Pu,0,i_Q] + coeff4*x_species[2:size,i_Pd,0,i_Q]
-
-                                            else :
-
-                                                # Si T est compris entre T_min et T_max alors double interpolation sur
-                                                # P et T
-
-                                                coeff1 = (T_ref - T_comp[i_Td])/(T_comp[i_Tu] - T_comp[i_Td])
-                                                coeff2 = 1. - coeff1
-                                                c14,c13,c24,c23 = coeff1*coeff4,coeff1*coeff3,coeff2*coeff4,coeff2*coeff3
-
-                                                compo1 = c13*x_species[2:size,i_Pu,i_Tu,i_Q] + c23*x_species[2:size,i_Pu,i_Td,i_Q]
-                                                compo2 = c14*x_species[2:size,i_Pd,i_Tu,i_Q] + c24*x_species[2:size,i_Pd,i_Td,i_Q]
-
-                                                compo[2:size,i,j,k,l] = compo1 + compo2
-
-                                        compo[0,i,j,k,l] = (1 - np.nansum(compo[2:size,i,j,k,l]))/(ratio + 1.)
-                                        compo[1,i,j,k,l] = compo[0,i,j,k,l]*ratio
-
-                                else :
-
-                                    # Si T > T_max alors on considere T = T_max
-
-                                    i_T = T_comp.size - 1
-
-                                    whQ, = np.where(Q_comp >= h2o[i,j,k,l])
-
-                                    if whQ.size != 0 :
-
-                                        # Si Q <= Q_max
-
-                                        i_Qu = whQ[0]
-                                        i_Qd = i_Qu - 1
-
-                                        Q_ref = h2o[i,j,k,l]
-
-                                        if i_Pu == 0 :
-
-                                            # Si P <= P_min alors on considere P = P_min
-
-                                            if i_Qu == 0 :
-
-                                                # Si Q <= Q_min alors on considere Q = Q_min
-
-                                                compo[:,i,j,k,l] = x_species[:,0,i_T,0]
-
-                                            else :
-
-                                                # Si Q est compris entre Q_min et Q_max alors interpolation sur Q
-
-                                                coeff5 = (Q_ref - Q_comp[i_Qd])/(Q_comp[i_Qu] - Q_comp[i_Qd])
-                                                coeff6 = 1. - coeff6
-
-                                                compo[2:size,i,j,k,l] = coeff5*x_species[2:size,0,i_T,i_Qu] + coeff6*x_species[2:size,0,i_T,i_Qd]
-
-                                        else :
-
-                                            # Si P est compris entre P_min et P_max alors interpolation sur P
-
-                                            coeff3 = (P_ref - P_comp[i_Pd])/(P_comp[i_Pu] - P_comp[i_Pd])
-                                            coeff4 = 1. - coeff3
-
-                                            if i_Qu == 0 :
-
-                                                # Si Q <= Q_min alors on considere Q = Q_min
-
-                                                compo[2:size,i,j,k,l] = coeff3*x_species[2:size,i_Pu,i_T,0] + coeff4*x_species[2:size,i_Pd,i_T,0]
-
-                                            else :
-
-                                                # Si Q est compris entre Q_min et Q_max alors double interpolation sur P et Q
-
-                                                coeff5 = (Q_ref - Q_comp[i_Qd])/(Q_comp[i_Qu] - Q_comp[i_Qd])
-                                                coeff6 = 1. - coeff5
-                                                c36,c35,c46,c45 = coeff3*coeff6,coeff3*coeff5,coeff4*coeff6,coeff4*coeff5
-
-                                                compo1 = c35*x_species[2:size,i_Pu,i_T,i_Qu] + c36*x_species[2:size,i_Pu,i_T,i_Qd]
-                                                compo2 = c45*x_species[2:size,i_Pd,i_T,i_Qu] + c46*x_species[2:size,i_Pd,i_T,i_Qd]
-
-                                                compo[2:size,i,j,k,l] = compo1 + compo2
-
-                                        compo[0,i,j,k,l] = (1 - np.nansum(compo[2:size,i,j,k,l]))/(ratio + 1.)
-                                        compo[1,i,j,k,l] = compo[0,i,j,k,l]*ratio
-
-                                    else :
-
-                                        # Si Q > Q_max alors on considere Q = Q_max
-
-                                        if Q_comp.size != 0 :
-
-                                            i_Q = Q_comp.size - 1
-
-                                        else :
-
-                                            i_Q = 0
-
-                                        if i_Pu == 0 :
-
-                                            # Si P <= P_min alors on considere P = P_min
-
-                                            compo[:,i,j,k,l] = x_species[:,0,i_T,i_Q]
-
-                                        else :
-
-                                            # Si P est compris entre P_min et P_max alors interpolation sur P
-
-                                            P_ref = P[i,j,k,l]
-
-                                            coeff3 = (P_ref - P_comp[i_Pd])/(P_comp[i_Pu] - P_comp[i_Pd])
-                                            coeff4 = 1. - coeff3
-
-                                            compo[2:size,i,j,k,l] = coeff3*x_species[2:size,i_Pu,i_T,i_Q] + coeff4*x_species[2:size,i_Pd,i_T,i_Q]
-                                            compo[0,i,j,k,l] = (1 - np.nansum(compo[2:size,i,j,k,l]))/(ratio + 1.)
-                                            compo[1,i,j,k,l] = compo[0,i,j,k,l]*ratio
-
-                            else :
-
-                                # Si P > P_max alors on considere P = P_max
-
-                                i_P = P_comp.size - 1
-
-                                whT, = np.where(T_comp >= T[i,j,k,l])
-
-                                if whT.size != 0  :
-
-                                    # Si T <= T_max
-
-                                    i_Tu = whT[0]
-                                    i_Td = i_Tu - 1
-
-                                    T_ref = T[i,j,k,l]
-
-                                    whQ, = np.where(Q_comp >= h2o[i,j,k,l])
-
-                                    if whQ.size != 0 :
-
-                                        # Si Q <= Q_max
-
-                                        i_Qu = whQ[0]
-                                        i_Qd = i_Qu - 1
-
-                                        Q_ref = h2o[i,j,k,l]
-
-                                        if i_Tu == 0 :
-
-                                            # Si T <= T_min alors on considere T = T_min
-
-                                            if i_Qu == 0 :
-
-                                                # Si Q <= Q_min alors on considere Q = Q_min
-
-                                                compo[:,i,j,k,l] = x_species[:,i_P,0,0]
-
-                                            else :
-
-                                                # Si Q est compris entre Q_min et Q_max alors interpolation sur Q
-
-                                                coeff5 = (Q_ref - Q_comp[i_Qd])/(Q_comp[i_Qu] - Q_comp[i_Qd])
-                                                coeff6 = 1. - coeff5
-
-                                                compo[2:size,i,j,k,l] = coeff5*x_species[2:size,i_P,0,i_Qu] + coeff6*x_species[2:size,i_P,0,i_Qd]
-
-                                        else :
-
-                                            # Si T est compris entre T_min et T_max alors interpolation sur T
-
-                                            coeff1 = (T_ref - T_comp[i_Td])/(T_comp[i_Tu] - T_comp[i_Td])
-                                            coeff2 = 1. - coeff1
-
-                                            if i_Qu == 0 :
-
-                                                # Si Q <= Q_min alors on considere Q = Q_min
-
-                                                compo[2:size,i,j,k,l] = coeff1*x_species[2:size,i_P,i_Tu,0] + coeff2*x_species[2:size,i_P,i_Td,0]
-
-                                            else :
-
-                                                # Si Q est compris entre Q_min et Q_max alors double interpolation sur T et Q
-
-                                                coeff5 = (Q_ref - Q_comp[i_Qd])/(Q_comp[i_Qu] - Q_comp[i_Qd])
-                                                coeff6 = 1. - coeff5
-                                                c16,c15,c26,c25 = coeff1*coeff6,coeff1*coeff5,coeff2*coeff6,coeff2*coeff5
-
-                                                compo1 = c15*x_species[2:size,i_P,i_Tu,i_Qu] + c25*x_species[2:size,i_P,i_Td,i_Qu]
-                                                compo2 = c16*x_species[2:size,i_P,i_Tu,i_Qd] + c26*x_species[2:size,i_P,i_Td,i_Qd]
-
-                                                compo[2:size,i,j,k,l] = compo1 + compo2
-
-                                        compo[0,i,j,k,l] = (1 - np.nansum(compo[2:size,i,j,k,l]))/(ratio + 1.)
-                                        compo[1,i,j,k,l] = compo[0,i,j,k,l]*ratio
-
-                                    else :
-
-                                        # Si Q > Q_max alors on considere Q = Q_max
-
-                                        if Q_comp.size != 0 :
-
-                                            i_Q = Q_comp.size - 1
-
-                                        else :
-
-                                            i_Q = 0
-
-                                        if i_Tu == 0 :
-
-                                            # Si T <= T_min alors on considere T = T_min
-
-                                            compo[:,i,j,k,l] = x_species[:,i_P,0,i_Q]
-
-                                        else :
-
-                                            # Si T est compris entre T_min et T_max alors interpolation sur T
-
-                                            T_ref = T[i,j,k,l]
-
-                                            coeff1 = (T_ref - T_comp[i_Td])/(T_comp[i_Tu] - T_comp[i_Td])
-                                            coeff2 = 1. - coeff1
-
-                                            compo[2:size,i,j,k,l] = coeff1*x_species[2:size,i_P,i_Tu,i_Q] + coeff2*x_species[2:size,i_P,i_Td,i_Q]
-                                            compo[0,i,j,k,l] = (1 - np.nansum(compo[2:size,i,j,k,l]))/(ratio + 1.)
-                                            compo[1,i,j,k,l] = compo[0,i,j,k,l]*ratio
-
-                                else :
-
-                                    # Si T > T_max alors on considere T = T_max
-
-                                    i_T = T_comp.size - 1
-
-                                    whQ, = np.where(Q_comp >= h2o[i,j,k,l])
-
-                                    if whQ.size != 0 :
-
-                                        # Si Q <= Q_max
-
-                                        i_Qu = whQ[0]
-                                        i_Qd = i_Qu - 1
-
-                                        Q_ref = h2o[i,j,k,l]
-
-                                        if i_Qu == 0 :
-
-                                            # Si Q <= Q_min alors on considere Q = Q_min
-
-                                            compo[:,i,j,k,l] = x_species[:,i_P,i_T,0]
-
-                                        else :
-
-                                            # Si Q est compris entre Q_min et Q_max alors interpolation sur Q
-
-                                            coeff5 = (Q_ref - Q_comp[i_Qd])/(Q_comp[i_Qu] - Q_comp[i_Qd])
-                                            coeff6 = 1. - coeff5
-
-                                            compo[2:size,i,j,k,l] = coeff5*x_species[2:size,i_P,i_T,i_Qu] + coeff6*x_species[2:size,i_P,i_T,i_Qd]
-                                            compo[0,i,j,k,l] = (1 - np.nansum(compo[2:size,i,j,k,l]))/(ratio + 1.)
-                                            compo[1,i,j,k,l] = compo[0,i,j,k,l]*ratio
-
-                                    else :
-
-                                        # Si Q > Q_max alors on considere Q = Q_max
-
-                                        if Q_comp.size != 0 :
-
-                                            i_Q = Q_comp.size - 1
-
-                                        else :
-
-                                            i_Q = 0
-
-                                        compo[:,i,j,k,l] = x_species[:,i_P,i_T,i_Q]
-
-                            M[i,j,k,l] = np.nansum(compo[:,i,j,k,l]*M_species)
-
-    if Composition == False :
-
-        M += M_atm
 
     # Une fois la composition dans chaque cellule des donnees GCM calculee, nous avons l'information manquante sur le
     # poids moleculaire moyen et donc sur la hauteur d'echelle locale. Nous pouvons alors transformer l'echelle de
     # pression en echelle d'altitude
 
-    for pres in range(b) :
+    for pres in range(n_l) :
 
         if pres == 0 :
 
             z[:,0,:,:] = 0.
-            Mass = np.zeros((a,c,d))
-            g = g0
+            Mass = np.zeros((n_t,n_lat,n_long),dtype=np.float64)
 
         else :
 
@@ -927,29 +337,26 @@ def Boxes_interlopation(P,T,h2o,Rp,g0,M_atm,number,P_comp,T_comp,Q_comp,species,
 ########################################################################################################################
 
 
-def Boxes_conversion(P,T,h2o,gen,z,compo,delta_z,Rp,h,hmax,dim,g0,M_atm,number,T_comp,P_comp,Q_comp,x_species,M_species,ratio,rank,Upper,\
-        Marker=False,Clouds=False,Composition=False,Middle=False) :
+def Boxes_conversion(P,T,Q,gen,z,compo,delta_z,Rp,h,hmax,dim,g0,M_atm,number,T_comp,P_comp,Q_comp,x_species,M_species,ratio,rank,Upper,\
+        Tracer=False,Clouds=False,Middle=False,LogInterp=False) :
 
-    a, b, c, d = np.shape(P)
-   
-    data_convert = np.zeros((number,a,dim,c,d))
+    n_t,n_l,n_lat,n_long = np.shape(P)
+    data_convert = np.zeros((number,n_t,dim,n_lat,n_long),dtype=np.float64)
     
     if Clouds == True : 
         sh_c = np.shape(gen)
-	c_number = sh_c[0]
+        c_number = sh_c[0]
 
-    if Composition == False :
-        data_convert[number - 1,:,:,:,:] += M_atm
-    else : 
-        sh_comp = np.shape(compo)
-	size = sh_comp[0]
+    if Tracer == True :
+        m_number = 1
+    else :
+        m_number = 0
 
-    Mass = np.zeros((a,c,d))
+    sh_comp = np.shape(compo)
+    size = sh_comp[0]
+
+    Mass = np.zeros((n_t,n_lat,n_long),dtype=np.float64)
     Reformate = False
-
-    first = np.zeros((a,c,d))
-    coeff1 = np.zeros((a,c,d))
-    coeff5 = np.zeros((a,c,d))
     
     if rank == 0 : 
         bar = ProgressBar(dim,'State of the conversion :')
@@ -961,28 +368,24 @@ def Boxes_conversion(P,T,h2o,gen,z,compo,delta_z,Rp,h,hmax,dim,g0,M_atm,number,T
         # des milieux de couche.
 
         if Middle == False :
-
             z_ref = i_z*delta_z
-
         else :
-
             if i_z == 0 :
-
                 z_ref = 0.
-
             else :
-
-                z_ref = (i_z-0.5)*delta_z
+                if i_z == dim-1 :
+                    z_ref = (i_z-1)*delta_z
+                else :
+                    z_ref = (i_z-0.5)*delta_z
 
         if z_ref >= hmax :
-
             Reformate = True
 
-        for t in range(a) :
+        for t in range(n_t) :
 
-            for lat in range(c) :
+            for lat in range(n_lat) :
 
-                for long in range(d) :
+                for long in range(n_long) :
 
                     # Nous cherchons l'intervalle dans lequel se situe le point d'altitude considere
 
@@ -990,174 +393,64 @@ def Boxes_conversion(P,T,h2o,gen,z,compo,delta_z,Rp,h,hmax,dim,g0,M_atm,number,T
 
                     # Si le point en question n'est pas au dessus du toit du modele a cette lattitude et a cette longitude
 
-                    if wh.size != 0 :
+                    if wh.size != 0 and i_z != 0  :
 
                         # Si z_ref n'est pas un point d'altitude de la maille de depart
 
-                        if z[t,wh[0],lat,long] != z_ref :
+                        res, c_grid, i_grid = interpolation(z_ref,z[t,:,lat,long],np.log(P[t,:,lat,long]))
 
-                            up = wh[0]
-                            dn = up - 1
+                        data_convert[0,t,i_z,lat,long] = np.exp(res)
+                        data_convert[1,t,i_z,lat,long] = c_grid[1]*T[t,i_grid[0],lat,long] + c_grid[0]*T[t,i_grid[1],lat,long]
 
-                            coeffa = (z[t,up,lat,long] - z_ref)/(z[t,up,lat,long] - z[t,dn,lat,long])
-                            coeffb = (z_ref - z[t,dn,lat,long])/(z[t,up,lat,long] - z[t,dn,lat,long])
+                        if Tracer == True :
+                            data_convert[2,t,i_z,lat,long] = c_grid[1]*Q[t,i_grid[0],lat,long] + c_grid[0]*Q[t,i_grid[1],lat,long]
 
-                            # Interpolation pour la pression puis la temperature
+                            if Clouds == True :
+                                for c_num in range(c_number) :
+                                    data_convert[3+c_num,t,i_z,lat,long] = c_grid[1]*gen[c_num,t,i_grid[0],lat,long] + c_grid[0]*gen[c_num,t,i_grid[1],lat,long]
 
-                            data_convert[0,t,i_z,lat,long] = np.exp(coeffa*np.log(P[t,dn,lat,long]) + coeffb*np.log(P[t,up,lat,long]))
-                            data_convert[1,t,i_z,lat,long] = coeffa*T[t,dn,lat,long] + coeffb*T[t,up,lat,long]
-
-                            if Marker == True :
-
-                                # Interpolation sur la fraction massique du marqueur
-
-                                data_convert[2,t,i_z,lat,long] = coeffa*h2o[t,dn,lat,long] + coeffb*h2o[t,up,lat,long]
-
-                                if Clouds == True :
-
-                                    # Pour chaque aerosol, on effectue l'interpolation
-
-                                    for c_num in range(c_number) :
-
-                                        data_convert[3+c_num,t,i_z,lat,long] = coeffa*gen[c_num,t,dn,lat,long] + coeffb*gen[c_num,t,up,lat,long]
-
-                                    if Composition == True :
-
-                                        # Interpolation sur la composition chimique et donc les fractions molaires, la somme de ces fractions
-                                        # doit etre egale a 1
-
-                                        for i in range(size) :
-
-                                            data_convert[3+c_number+i,t,i_z,lat,long] = coeffa*compo[i,t,dn,lat,long] +coeffb*compo[i,t,up,lat,long]
-
-                                        # Calcul de la masse molaire moyenne a partir de la composition chimique
-
-                                        data_convert[3+c_number+size,t,i_z,lat,long] = np.nansum(data_convert[3+c_number:3+c_number+size,t,i_z,lat,long]*M_species)
-
-                                else :
-
-                                    if Composition == True :
-
-                                        # Interpolation sur la composition chimique et donc les fractions molaires, la somme de ces fractions
-                                        # doit etre egale a 1
-
-                                        for i in range(size) :
-
-                                            data_convert[3+i,t,i_z,lat,long] = coeffa*compo[i,t,dn,lat,long] +coeffb*compo[i,t,up,lat,long]
-
-                                        # Calcul de la masse molaire moyenne a partir de la composition chimique
-
-                                        data_convert[3+size,t,i_z,lat,long] = np.nansum(data_convert[3:3+size,t,i_z,lat,long]*M_species)
-
+                            if LogInterp == True :
+                                com, c_gr, i_gr = interp3olation_uni_multi(np.log10(data_convert[0,t,i_z,lat,long]),data_convert[1,t,i_z,lat,long],\
+                                                                            data_convert[2,t,i_z,lat,long],np.log10(P_comp),T_comp,Q_comp,x_species)
                             else :
+                                com, c_gr, i_gr = interp3olation_uni_multi(data_convert[0,t,i_z,lat,long],data_convert[1,t,i_z,lat,long],\
+                                                                            data_convert[2,t,i_z,lat,long],P_comp,T_comp,Q_comp,x_species)
+                        else :
+                            if Clouds == True :
+                                for c_num in range(c_number) :
+                                    data_convert[2+c_num,t,i_z,lat,long] = c_grid[1]*gen[c_num,t,i_grid[0],lat,long] + c_grid[0]*gen[c_num,t,i_grid[1],lat,long]
 
-                                if Clouds == True :
-
-                                    # Pour chaque aerosol, on effectue l'interpolation
-
-                                    for c_num in range(c_number) :
-
-                                        data_convert[2+c_num,t,i_z,lat,long] = coeffa*gen[c_num,t,dn,lat,long] + coeffb*gen[c_num,t,up,lat,long]
-
-                                    if Composition == True :
-
-                                        for i in range(size) :
-
-                                            data_convert[2+c_number+i,t,i_z,lat,long] = coeffa*compo[i,t,dn,lat,long] +coeffb*compo[i,t,up,lat,long]
-
-                                        data_convert[2+c_number+size,t,i_z,lat,long] = np.nansum(data_convert[2+c_number:2+c_number+size,t,i_z,lat,long]*M_species)
-
-                                else :
-
-                                    if Composition == True :
-
-                                        # Interpolation sur la composition chimique et donc les fractions molaires, la somme de ces fractions
-                                        # doit etre egale a 1
-
-                                        for i in range(size) :
-
-                                            data_convert[2+i,t,i_z,lat,long] = coeffa*compo[i,t,dn,lat,long] +coeffb*compo[i,t,up,lat,long]
-
-                                        # Calcul de la masse molaire moyenne a partir de la composition chimique
-
-                                        data_convert[2+size,t,i_z,lat,long] = np.nansum(data_convert[2:2+size,t,i_z,lat,long]*M_species)
-
+                            if LogInterp == True :
+                                com, c_gr, i_gr = interp2olation_uni_multi(np.log10(data_convert[0,t,i_z,lat,long]),data_convert[1,t,i_z,lat,long],\
+                                                                            np.log10(P_comp),T_comp,x_species)
+                            else :
+                                com, c_gr, i_gr = interp2olation_uni_multi(data_convert[0,t,i_z,lat,long],data_convert[1,t,i_z,lat,long],\
+                                                                            P_comp,T_comp,x_species)
                             # Si le point considere n'est pas le premier, et donc, le point de surface, on calcule la masse d'atmosphere
                             # a pendre en compte ensuite dans l'extrapolation
 
-                            if i_z != 0 :
+                        data_convert[2+m_number+c_number,t,i_z,lat,long] = (1. - np.nansum(com[2:]))/(1. + ratio)
+                        data_convert[2+m_number+c_number+1,t,i_z,lat,long] = data_convert[2+m_number+c_number,t,i_z,lat,long]*ratio
+                        data_convert[2+m_number+c_number+2:number-1,t,i_z,lat,long] = com[2:]
+                        data_convert[2+m_number+c_number+size,t,i_z,lat,long] = np.nansum(data_convert[2+m_number+c_number:2+m_number+c_number+size,t,i_z,lat,long]*M_species)
 
-                                Mass[t,lat,long] += data_convert[0,t,i_z,lat,long]/(R_gp*data_convert[1,t,i_z,lat,long])*\
-                                        data_convert[number-1,t,i_z,lat,long]*4/3.*np.pi*((Rp + i_z*delta_z)**3 - (Rp + (i_z - 1)*delta_z)**3)
-
-                        # Sinon pas d'interpolation necessaire
-
-                        else :
-
-                            data_convert[0,t,i_z,lat,long] = P[t,wh[0],lat,long]
-                            data_convert[1,t,i_z,lat,long] = T[t,wh[0],lat,long]
-
-                            if Marker == True :
-
-                                data_convert[2,t,i_z,lat,long] = h2o[t,wh[0],lat,long]
-
-                                if Clouds == True :
-
-                                    for c_num in range(c_number) :
-
-                                        data_convert[3+c_num,t,i_z,lat,long] = gen[c_num,t,wh[0],lat,long]
-
-                                    if Composition == True :
-
-                                        for i in range(size) :
-
-                                            data_convert[3+c_number+i,t,i_z,lat,long] = compo[i,t,wh[0],lat,long]
-
-                                        data_convert[3+c_number+size,t,i_z,lat,long] = np.nansum(data_convert[3+c_number:3+c_number+size,t,i_z,lat,long]*M_species)
-
-                                else :
-
-                                    if Composition == True :
-
-                                        for i in range(size) :
-
-                                            data_convert[3+i,t,i_z,lat,long] = compo[i,t,wh[0],lat,long]
-
-                                        data_convert[3+size,t,i_z,lat,long] = np.nansum(data_convert[3:3+size,t,i_z,lat,long]*M_species)
-
-                            else :
-
-                                if Clouds == True :
-
-                                    for c_num in range(c_number) :
-
-                                        data_convert[2+c_num,t,i_z,lat,long] = gen[c_num,t,wh[0],lat,long]
-
-                                    if Composition == True :
-
-                                        for i in range(size) :
-
-                                            data_convert[2+c_number+i,t,i_z,lat,long] = compo[i,t,wh[0],lat,long]
-
-                                        data_convert[2+c_number+size,t,i_z,lat,long] = np.nansum(data_convert[2+c_number:2+c_number+size,t,i_z,lat,long]*M_species)
-
-                                else :
-
-                                    if Composition == True :
-
-                                        for i in range(size) :
-
-                                            data_convert[2+i,t,i_z,lat,long] = compo[i,t,wh[0],lat,long]
-
-                                        data_convert[2+size,t,i_z,lat,long] = np.nansum(data_convert[2:2+size,t,i_z,lat,long]*M_species)
-
-                            if i_z != 0 :
-
-                                Mass[t,lat,long] += data_convert[0,t,i_z,lat,long]/(R_gp*data_convert[1,t,i_z,lat,long])*\
+                        Mass[t,lat,long] += data_convert[0,t,i_z,lat,long]/(R_gp*data_convert[1,t,i_z,lat,long])*\
                                     data_convert[number-1,t,i_z,lat,long]*4/3.*np.pi*((Rp + i_z*delta_z)**3 - (Rp + (i_z - 1)*delta_z)**3)
 
                     # Si le point d'altitude est plus eleve que le toit du modele a cette lattitude et cette longitude
                     # il nous faut extrapoler
+
+                    if i_z == 0 :
+
+                        data_convert[0,t,i_z,lat,long] = P[t,0,lat,long]
+                        data_convert[1,t,i_z,lat,long] = T[t,0,lat,long]
+                        if Tracer == True :
+                            data_convert[2,t,i_z,lat,long] = Q[t,0,lat,long]
+                        if Clouds == True :
+                            for c_num in range(c_number) :
+                                data_convert[2+m_number+c_num,t,i_z,lat,long] = gen[c_num,t,0,lat,long]
+                        data_convert[2+m_number+c_number:number-1,t,i_z,lat,long] = compo[:,t,0,lat,long]
+                        data_convert[2+m_number+c_number+size,t,i_z,lat,long] = np.nansum(data_convert[2+m_number+c_number:2+m_number+c_number+size,t,i_z,lat,long]*M_species)
 
                     else :
 
@@ -1165,78 +458,35 @@ def Boxes_conversion(P,T,h2o,gen,z,compo,delta_z,Rp,h,hmax,dim,g0,M_atm,number,T
                         # en altitude, suivant le type d'extrapolation, nous ne pouvons pas l'identifier a celle deja calculee
                         # et nous preferons l'executer a partir des donnees d'equilibre que sur des resultats d'interpolation
 
-                        if Reformate == False :
+                        if wh.size == 0 :
 
-                            data_convert[1,t,i_z,lat,long] = T[t,b-1,lat,long]
+                            if Reformate == False :
+
+                                data_convert[1,t,i_z,lat,long] = T[t,n_l-1,lat,long]
 
                         else :
 
-                            # En fonction du type d'exrapolation, nous pouvons ou non optimiser l'interpolation sur la
-                            # composition chimique en haute atmosphere
-
-                            if Upper == "Isotherme" :
-
-                                data_convert[1,t,i_z,lat,long] = T[t,b-1,lat,long]
-
-                            if Upper ==  "Isotherme_moyen" :
-
-                                data_convert[1,t,i_z,lat,long] = T_mean
-
-                            if Upper == "Maximum_isotherme" :
-
-                                data_convert[1,t,i_z,lat,long] = T_max
-
-                            if Upper == "Minimum_isotherme" :
-
-                                data_convert[1,t,i_z,lat,long] = T_min
+                            if Upper[0] == "Isotherme" :
+                                data_convert[1,t,i_z,lat,long] = T[t,n_l-1,lat,long]
+                            if Upper[0] ==  "Isotherme_moyen" :
+                                data_convert[1,t,i_z,lat,long] = Upper[1]
+                            if Upper[0] == "Maximum_isotherme" :
+                                data_convert[1,t,i_z,lat,long] = Upper[2]
+                            if Upper[0] == "Minimum_isotherme" :
+                                data_convert[1,t,i_z,lat,long] = Upper[3]
 
                         # On estime la pression au dela du toit a partir de la temperature choisie
 
                         g = g0 + Mass[t,lat,long]*G/(Rp + i_z*delta_z)**2
 
-                        data_convert[0,t,i_z,lat,long] = data_convert[0,t,i_z-1,lat,long]*np.exp(-data_convert[number-1,t,i_z-1,lat,long]*g*\
-                                delta_z/(R_gp*data_convert[1,t,i_z,lat,long])*1/((1+z_ref/Rp)*(1+(z_ref-delta_z)/Rp)))
+                        if i_z != dim-1 :
+                            data_convert[0,t,i_z,lat,long] = data_convert[0,t,i_z-1,lat,long]*np.exp(-data_convert[number-1,t,i_z-1,lat,long]*g*\
+                                delta_z/(R_gp*data_convert[1,t,i_z,lat,long])*1./((1+z_ref/Rp)*(1+(z_ref-delta_z)/Rp)))
+                        else :
+                            data_convert[0,t,i_z,lat,long] = data_convert[0,t,i_z-1,lat,long]*np.exp(-data_convert[number-1,t,i_z-1,lat,long]*g*\
+                                delta_z/(2.*R_gp*data_convert[1,t,i_z,lat,long])*1./((1+z_ref/Rp)*(1+(z_ref-delta_z/2.)/Rp)))
 
                         T_ref = data_convert[1,t,i_z,lat,long]
-
-                        # On calcule les coefficients d'interpolation
-
-                        if first[t,lat,long] == 0 :
-
-                            whT, = np.where(T_comp >= T[t,b-1,lat,long])
-
-                            if whT.size != 0  :
-
-                                # Si T_ref < T_max
-
-                                if whT[0] != 0 :
-
-                                    # Si T_ref compris entre T_min et T_max alors interpolation sur T
-
-                                    i_Tu = whT[0]
-                                    i_Td = i_Tu - 1
-
-                                    coeff1[t,lat,long] = (T_ref - T_comp[i_Td])/(T_comp[i_Tu] - T_comp[i_Td])
-
-                                else :
-
-                                    # Si T_ref <= T_min, alors en identifiant les indices et avec des coefficient de 0.5
-                                    # le resultat de l'interpolation donne les valeurs pour T = T_min
-
-                                    i_Tu = 0
-                                    i_Td = 0
-
-                                    coeff1[t,lat,long] = 0.5
-
-                            else :
-
-                                # T > T_max, alors en identifiant les indices et avec des coefficients de 0.5 le resultat
-                                # de l'interpolation donne les valeurs pour T_max
-
-                                i_Tu = T_comp.size - 1
-                                i_Td = T_comp.size - 1
-
-                                coeff1[t,lat,long] = 0.5
 
                         # On incremente toujours la masse atmospherique pour la latitude et la longitude donnee, les
                         # ce point est a modifier
@@ -1246,477 +496,39 @@ def Boxes_conversion(P,T,h2o,gen,z,compo,delta_z,Rp,h,hmax,dim,g0,M_atm,number,T
 
                         P_ref = data_convert[0,t,i_z,lat,long]
 
-                        if Marker == True :
+                        if Tracer == True :
+                            data_convert[2,t,i_z,lat,long] = Q[t,n_l-1,lat,long]
+                            Q_ref = data_convert[2,t,i_z,lat,long]
 
-                            data_convert[2,t,i_z,lat,long] = h2o[t,b-1,lat,long]
+                            if LogInterp == True :
+                                compos, c_grid, i_grid = interp3olation_uni_multi(np.log10(P_ref),T_ref,Q_ref,np.log10(P_comp),T_comp,Q_comp,x_species)
+                            else :
+                                compos, c_grid, i_grid = interp3olation_uni_multi(P_ref,T_ref,Q_ref,P_comp,T_comp,Q_comp,x_species)
 
                             if Clouds == True :
-
-                                data_convert[3:3+c_number,t,i_z,lat,long] = gen[:,t,b-1,lat,long]
-
-                                # Hormis la composition, on identifie les couches superieures au toit de l'atmosphere
-                                # pour les fractions massiques en marqueur et aerosols
-
-                                if Composition == True :
-
-                                    whP, = np.where(P_comp >= data_convert[0,t,i_z,lat,long])
-
-                                    if first[t,lat,long] == 0 :
-
-                                        whQ, = np.where(Q_comp >= data_convert[2,t,i_z,lat,long])
-
-                                    if whP.size != 0 :
-
-                                        # Si P_ref < P_max
-
-                                        if whP[0] != 0 :
-
-                                            # Si P_ref compris entre P_min et P_max, alors double interpolation sur T et P
-
-                                            i_Pu = whP[0]
-                                            i_Pd = i_Pu - 1
-
-                                            coeff3 = (P_ref - P_comp[i_Pd])/(P_comp[i_Pu] - P_comp[i_Pd])
-                                            coeff4 = (P_comp[i_Pu] - P_ref)/(P_comp[i_Pu] - P_comp[i_Pd])
-
-                                            if first[t,lat,long] == 0 :
-
-                                                if whQ.size != 0 :
-
-                                                    # Si Q_ref < Q_max
-
-                                                    if whQ[0] == 0 :
-
-                                                        # Si Q <= Q_min, on identifie les indices et les coefficients a 0.5, le
-                                                        # resultat est celui de Q_ref = Q_min
-
-                                                        i_Qu = 0
-                                                        i_Qd = 0
-
-                                                        coeff5[t,lat,long] = 0.5
-
-                                                    else :
-
-                                                        # Si Q compris entre Q_min et Q_max, alors triple interpolation possible
-                                                        # sur P, T et Q
-
-                                                        i_Qu = whQ[0]
-                                                        i_Qd = i_Qu - 1
-
-                                                        coeff5[t,lat,long] = (Q_ref - Q_comp[i_Qd])/(Q_comp[i_Qu] - Q_comp[i_Qd])
-
-                                                else :
-
-                                                    # Si Q_ref > Q_max alors on identifie les indices et les coefficients
-                                                    # a 0.5, le resultat de l'interpolation est celui pour Q = Q_max
-
-                                                    i_Qu = Q_comp.size - 1
-                                                    i_Qd = Q_comp.size - 1
-
-                                                    coeff5[t,lat,long] = 0.5
-
-
-                                            compo1 = coeff1[t,lat,long]*x_species[2:size,i_Pd,i_Tu,i_Qd] + (1-coeff1[t,lat,long])*x_species[2:size,i_Pd,i_Td,i_Qd]
-                                            compo2 = coeff1[t,lat,long]*x_species[2:size,i_Pu,i_Tu,i_Qd] + (1-coeff1[t,lat,long])*x_species[2:size,i_Pu,i_Td,i_Qd]
-                                            compo3 = coeff1[t,lat,long]*x_species[2:size,i_Pd,i_Tu,i_Qu] + (1-coeff1[t,lat,long])*x_species[2:size,i_Pd,i_Td,i_Qu]
-                                            compo4 = coeff1[t,lat,long]*x_species[2:size,i_Pu,i_Tu,i_Qu] + (1-coeff1[t,lat,long])*x_species[2:size,i_Pu,i_Td,i_Qu]
-
-                                            compo5 = coeff3*compo2 + coeff4*compo1
-                                            compo6 = coeff3*compo4 + coeff4*compo3
-
-                                            compos = coeff5[t,lat,long]*compo6 + (1-coeff5[t,lat,long])*compo5
-
-                                        else :
-
-                                            # Si P_ref <= P_min
-
-                                            i_Pd = 0
-
-                                            if first[t,lat,long] == 0 :
-
-                                                if whQ.size != 0 :
-
-                                                    # Si Q_ref < Q_max
-
-                                                    if whQ[0] == 0 :
-
-                                                        # Si Q <= Q_min, on identifie les indices et les coefficients a 0.5, le
-                                                        # resultat est celui de Q_ref = Q_min
-
-                                                        i_Qu = 0
-                                                        i_Qd = 0
-
-                                                        coeff5[t,lat,long] = 0.5
-
-                                                    else :
-
-                                                        # Si Q compris entre Q_min et Q_max, alors triple interpolation possible
-                                                        # sur P, T et Q
-
-                                                        i_Qu = whQ[0]
-                                                        i_Qd = i_Qu - 1
-
-                                                        coeff5[t,lat,long] = (Q_ref - Q_comp[i_Qd])/(Q_comp[i_Qu] - Q_comp[i_Qd])
-
-                                                else :
-
-                                                    # Si Q_ref > Q_max alors on identifie les indices et les coefficients
-                                                    # a 0.5, le resultat de l'interpolation est celui pour Q = Q_max
-
-                                                    i_Qu = Q_comp.size - 1
-                                                    i_Qd = Q_comp.size - 1
-
-                                                    coeff5[t,lat,long] = 0.5
-
-                                            compo1 = coeff1[t,lat,long]*x_species[2:size,i_Pd,i_Tu,i_Qd] + (1-coeff1[t,lat,long])*x_species[2:size,i_Pd,i_Td,i_Qd]
-                                            compo2 = coeff1[t,lat,long]*x_species[2:size,i_Pd,i_Tu,i_Qu] + (1-coeff1[t,lat,long])*x_species[2:size,i_Pd,i_Td,i_Qu]
-
-                                            compos = coeff5[t,lat,long]*compo2 + (1-coeff5[t,lat,long])*compo1
-
-                                    else :
-
-                                        # Si P_ref > P_max
-
-                                        i_Pd = P_comp.size - 1
-
-                                        if first[t,lat,long] == 0 :
-
-                                            if whQ.size != 0 :
-
-                                                # Si Q_ref < Q_max
-
-                                                if whQ[0] == 0 :
-
-                                                    # Si Q <= Q_min, on identifie les indices et les coefficients a 0.5, le
-                                                    # resultat est celui de Q_ref = Q_min
-
-                                                    i_Qu = 0
-                                                    i_Qd = 0
-
-                                                    coeff5[t,lat,long] = 0.5
-
-                                                else :
-
-                                                    # Si Q compris entre Q_min et Q_max, alors triple interpolation possible
-                                                    # sur P, T et Q
-
-                                                    i_Qu = whQ[0]
-                                                    i_Qd = i_Qu - 1
-
-                                                    coeff5[t,lat,long] = (Q_ref - Q_comp[i_Qd])/(Q_comp[i_Qu] - Q_comp[i_Qd])
-
-                                            else :
-
-                                                # Si Q_ref > Q_max alors on identifie les indices et les coefficients
-                                                # a 0.5, le resultat de l'interpolation est celui pour Q = Q_max
-
-                                                i_Qu = Q_comp.size - 1
-                                                i_Qd = Q_comp.size - 1
-
-                                                coeff5[t,lat,long] = 0.5
-
-                                        compo1 = coeff1[t,lat,long]*x_species[2:size,i_Pd,i_Tu,i_Qd] + (1-coeff1[t,lat,long])*x_species[2:size,i_Pd,i_Td,i_Qd]
-                                        compo2 = coeff1[t,lat,long]*x_species[2:size,i_Pd,i_Tu,i_Qu] + (1-coeff1[t,lat,long])*x_species[2:size,i_Pd,i_Td,i_Qu]
-
-                                        compos = coeff5[t,lat,long]*compo2 + (1-coeff5[t,lat,long])*compo1
-
-                                    # On s'assure que la somme des fractions molaires est bien egale a 1
-
-                                    compoH2 = (1 - np.nansum(compos))/(ratio + 1.)
-                                    compoHe = compoH2*ratio
-
-                                    data_convert[3+c_number,t,i_z,lat,long] = compoH2
-                                    data_convert[4+c_number,t,i_z,lat,long] = compoHe
-                                    data_convert[5+c_number:number-1,t,i_z,lat,long] = compos
-                                    data_convert[number-1,t,i_z,lat,long] = np.nansum(data_convert[3+c_number:number-1,t,i_z,lat,long]*\
-                                        M_species)
-
-                            else :
-
-                                if Composition == True :
-
-                                    whP, = np.where(P_comp >= data_convert[0,t,i_z,lat,long])
-                                    whQ, = np.where(Q_comp >= data_convert[2,t,i_z,lat,long])
-
-                                    if whP.size != 0 :
-
-                                        # Si P_ref < P_max
-
-                                        if first[t,lat,long] == 0 :
-
-                                            if whP[0] != 0 :
-
-                                                # Si P_ref compris entre P_min et P_max, alors double interpolation sur T et P
-
-                                                i_Pu = whP[0]
-                                                i_Pd = i_Pu - 1
-
-                                                coeff3[t,lat,long] = (P_ref - P_comp[i_Pd])/(P_comp[i_Pu] - P_comp[i_Pd])
-
-                                                if whQ.size != 0 :
-
-                                                    # Si Q_ref < Q_max
-
-                                                    if whQ[0] == 0 :
-
-                                                        # Si Q <= Q_min, on identifie les indices et les coefficients a 0.5, le
-                                                        # resultat est celui de Q_ref = Q_min
-
-                                                        i_Qu = 0
-                                                        i_Qd = 0
-
-                                                        coeff5[t,lat,long] = 0.5
-
-                                                    else :
-
-                                                        # Si Q compris entre Q_min et Q_max, alors triple interpolation possible
-                                                        # sur P, T et Q
-
-                                                        i_Qu = whQ[0]
-                                                        i_Qd = i_Qu - 1
-
-                                                        coeff5[t,lat,long] = (Q_ref - Q_comp[i_Qd])/(Q_comp[i_Qu] - Q_comp[i_Qd])
-
-                                                else :
-
-                                                    # Si Q_ref > Q_max alors on identifie les indices et les coefficients
-                                                    # a 0.5, le resultat de l'interpolation est celui pour Q = Q_max
-
-                                                    i_Qu = Q_comp.size - 1
-                                                    i_Qd = Q_comp.size - 1
-
-                                                    coeff5[t,lat,long] = 0.5
-
-
-                                            compo1 = coeff1[t,lat,long]*x_species[2:size,i_Pd,i_Tu,i_Qd] + (1-coeff1[t,lat,long])*x_species[2:size,i_Pd,i_Td,i_Qd]
-                                            compo2 = coeff1[t,lat,long]*x_species[2:size,i_Pu,i_Tu,i_Qd] + (1-coeff1[t,lat,long])*x_species[2:size,i_Pu,i_Td,i_Qd]
-                                            compo3 = coeff1[t,lat,long]*x_species[2:size,i_Pd,i_Tu,i_Qu] + (1-coeff1[t,lat,long])*x_species[2:size,i_Pd,i_Td,i_Qu]
-                                            compo4 = coeff1[t,lat,long]*x_species[2:size,i_Pu,i_Tu,i_Qu] + (1-coeff1[t,lat,long])*x_species[2:size,i_Pu,i_Td,i_Qu]
-
-                                            compo5 = coeff3*compo2 + coeff4*compo1
-                                            compo6 = coeff3*compo4 + coeff4*compo3
-
-                                            compos = coeff5[t,lat,long]*compo6 + (1-coeff5[t,lat,long])*compo5
-
-                                        else :
-
-                                            # Si P_ref <= P_min
-
-                                            i_Pd = 0
-
-                                            if first[t,lat,long] == 0 :
-
-                                                if whQ.size != 0 :
-
-                                                    # Si Q_ref < Q_max
-
-                                                    if whQ[0] == 0 :
-
-                                                        # Si Q <= Q_min, on identifie les indices et les coefficients a 0.5, le
-                                                        # resultat est celui de Q_ref = Q_min
-
-                                                        i_Qu = 0
-                                                        i_Qd = 0
-
-                                                        coeff5[t,lat,long] = 0.5
-
-                                                    else :
-
-                                                        # Si Q compris entre Q_min et Q_max, alors triple interpolation possible
-                                                        # sur P, T et Q
-
-                                                        i_Qu = whQ[0]
-                                                        i_Qd = i_Qu - 1
-
-                                                        coeff5[t,lat,long] = (Q_ref - Q_comp[i_Qd])/(Q_comp[i_Qu] - Q_comp[i_Qd])
-
-                                                else :
-
-                                                    # Si Q_ref > Q_max alors on identifie les indices et les coefficients
-                                                    # a 0.5, le resultat de l'interpolation est celui pour Q = Q_max
-
-                                                    i_Qu = Q_comp.size - 1
-                                                    i_Qd = Q_comp.size - 1
-
-                                                    coeff5[t,lat,long] = 0.5
-
-                                            compo1 = coeff1[t,lat,long]*x_species[2:size,i_Pd,i_Tu,i_Qd] + (1-coeff1[t,lat,long])*x_species[2:size,i_Pd,i_Td,i_Qd]
-                                            compo2 = coeff1[t,lat,long]*x_species[2:size,i_Pd,i_Tu,i_Qu] + (1-coeff1[t,lat,long])*x_species[2:size,i_Pd,i_Td,i_Qu]
-
-                                            compos = coeff5[t,lat,long]*compo2 + (1-coeff5[t,lat,long])*compo1
-
-                                    else :
-
-                                        # Si P_ref > P_max
-
-                                        i_Pd = P_comp.size - 1
-
-                                        if first[t,lat,long] == 0 :
-
-                                            if whQ.size != 0 :
-
-                                                # Si Q_ref < Q_max
-
-                                                if whQ[0] == 0 :
-
-                                                    # Si Q <= Q_min, on identifie les indices et les coefficients a 0.5, le
-                                                    # resultat est celui de Q_ref = Q_min
-
-                                                    i_Qu = 0
-                                                    i_Qd = 0
-
-                                                    coeff5[t,lat,long] = 0.5
-
-                                                else :
-
-                                                    # Si Q compris entre Q_min et Q_max, alors triple interpolation possible
-                                                    # sur P, T et Q
-
-                                                    i_Qu = whQ[0]
-                                                    i_Qd = i_Qu - 1
-
-                                                    coeff5[t,lat,long] = (Q_ref - Q_comp[i_Qd])/(Q_comp[i_Qu] - Q_comp[i_Qd])
-
-                                            else :
-
-                                                # Si Q_ref > Q_max alors on identifie les indices et les coefficients
-                                                # a 0.5, le resultat de l'interpolation est celui pour Q = Q_max
-
-                                                i_Qu = Q_comp.size - 1
-                                                i_Qd = Q_comp.size - 1
-
-                                                coeff5[t,lat,long] = 0.5
-
-                                        compo1 = coeff1[t,lat,long]*x_species[2:size,i_Pd,i_Tu,i_Qd] + (1-coeff1[t,lat,long])*x_species[2:size,i_Pd,i_Td,i_Qd]
-                                        compo2 = coeff1[t,lat,long]*x_species[2:size,i_Pd,i_Tu,i_Qu] + (1-coeff1[t,lat,long])*x_species[2:size,i_Pd,i_Td,i_Qu]
-
-                                        compos = coeff5[t,lat,long]*compo2 + (1-coeff5[t,lat,long])*compo1
-
-                                    # On s'assure que la somme des fractions molaires est bien egale a 1
-
-                                    compoH2 = (1 - np.nansum(compos))/(ratio + 1.)
-                                    compoHe = compoH2*ratio
-                                    data_convert[3,t,i_z,lat,long] = compoH2
-                                    data_convert[4,t,i_z,lat,long] = compoHe
-                                    data_convert[5:number-1,t,i_z,lat,long] = compos
-                                    data_convert[number-1,t,i_z,lat,long] = np.nansum(data_convert[3:number-1,t,i_z,lat,long]*\
-                                        M_species)
+                                data_convert[3:3+c_number,t,i_z,lat,long] = gen[:,t,n_l-1,lat,long]
 
                         else :
+                            if LogInterp == True :
+                                compos, c_grid, i_grid = interp2olation_uni_multi(np.log10(P_ref),T_ref,np.log10(P_comp),T_comp,x_species)
+                            else :
+                                compos, c_grid, i_grid = interp2olation_uni_multi(P_ref,T_ref,P_comp,T_comp,x_species)
 
                             if Clouds == True :
+                                data_convert[2:2+c_number,t,i_z,lat,long] = gen[:,t,n_l-1,lat,long]
 
-                                data_convert[2:2+c_number,t,i_z,lat,long] = gen[:,t,b-1,lat,long]
+                        compoH2 = (1 - np.nansum(compos[2:]))/(ratio + 1.)
+                        compoHe = compoH2*ratio
 
-                                if Composition == True :
-
-                                    wh, = np.where(P_comp >= data_convert[0,t,i_z,lat,long])
-
-                                    if wh.size != 0 :
-
-                                        # Si P < P_max
-
-                                        if wh[0] != 0 :
-
-                                            # Si P_ref est compris entre P_min et P_max, double interpolation sur T et P
-
-                                            i_Pu = wh[0]
-                                            i_Pd = i_Pu - 1
-
-                                            coeff3 = (P_ref - P_comp[i_Pd])/(P_comp[i_Pu] - P_comp[i_Pd])
-                                            coeff4 = (P_comp[i_Pu] - P_ref)/(P_comp[i_Pu] - P_comp[i_Pd])
-
-                                        else :
-
-                                            # Si P_ref <= P_min
-
-                                            i_Pu = 0
-                                            i_Pd = 0
-
-                                            coeff3 = 0.5
-                                            coeff4 = 0.5
-
-                                        compo1 = coeff1[t,lat,long]*x_species[2:size,i_Pd,i_Tu] + (1-coeff1[t,lat,long])*x_species[2:size,i_Pd,i_Td]
-                                        compo2 = coeff1[t,lat,long]*x_species[2:size,i_Pu,i_Tu] + (1-coeff1[t,lat,long])*x_species[2:size,i_Pu,i_Td]
-
-                                        compos = coeff3*compo2 + coeff4*compo1
-
-                                    else :
-
-                                        # Si P_ref > P_max
-
-                                        i_Pd = P_comp.size - 1
-
-                                        compos = coeff1[t,lat,long]*x_species[2:size,i_Pd,i_Tu] + (1-coeff1[t,lat,long])*x_species[2:size,i_Pd,i_Td]
-
-                                    compoH2 = (1 - np.nansum(compos))/(ratio + 1.)
-                                    compoHe = compoH2*ratio
-
-                                    # On s'assure que la somme des fractions molaires est bien egale a 1
-
-                                    data_convert[2+c_number,t,i_z,lat,long] = compoH2
-                                    data_convert[3+c_number,t,i_z,lat,long] = compoHe
-                                    data_convert[4+c_number:number-1,t,i_z,lat,long] = compos
-                                    data_convert[number-1,t,i_z,lat,long] = np.nansum(data_convert[2+c_number:number-1,t,i_z,lat,long]*\
+                        data_convert[2+m_number+c_number,t,i_z,lat,long] = compoH2
+                        data_convert[3+m_number+c_number,t,i_z,lat,long] = compoHe
+                        data_convert[4+m_number+c_number:number-1,t,i_z,lat,long] = compos[2:]
+                        data_convert[number-1,t,i_z,lat,long] = np.nansum(data_convert[2+m_number+c_number:number-1,t,i_z,lat,long]*\
                                         M_species)
 
-                            else :
-
-                                if Composition == True :
-
-                                    wh, = np.where(P_comp >= data_convert[0,t,i_z,lat,long])
-
-                                    if wh.size != 0 :
-
-                                        # Si P < P_max
-
-                                        if wh[0] != 0 :
-
-                                            # Si P_ref est compris entre P_min et P_max, double interpolation sur T et P
-
-                                            i_Pu = wh[0]
-                                            i_Pd = i_Pu - 1
-
-                                            coeff3 = (P_ref - P_comp[i_Pd])/(P_comp[i_Pu] - P_comp[i_Pd])
-                                            coeff4 = (P_comp[i_Pu] - P_ref)/(P_comp[i_Pu] - P_comp[i_Pd])
-
-                                        else :
-
-                                            # Si P_ref <= P_min
-
-                                            i_Pu = 0
-                                            i_Pd = 0
-
-                                            coeff3 = 0.5
-                                            coeff4 = 0.5
-
-                                        compo1 = coeff1[t,lat,long]*x_species[2:size,i_Pd,i_Tu] + (1-coeff1[t,lat,long])*x_species[2:size,i_Pd,i_Td]
-                                        compo2 = coeff1[t,lat,long]*x_species[2:size,i_Pu,i_Tu] + (1-coeff1[t,lat,long])*x_species[2:size,i_Pu,i_Td]
-
-                                        compos = coeff3*compo2 + coeff4*compo1
-
-                                    else :
-
-                                        # Si P_ref > P_max
-
-                                        i_Pd = P_comp.size - 1
-
-                                        compos = coeff1*x_species[2:size,i_Pd,i_Tu] + (1-coeff1[t,lat,long])*x_species[2:size,i_Pd,i_Td]
-
-                                    compoH2 = (1 - np.nansum(compos))/(ratio + 1.)
-                                    compoHe = compoH2*ratio
-
-                                    # On s'assure que la somme des fractions molaires est bien egale a 1
-
-                                    data_convert[2,t,i_z,lat,long] = compoH2
-                                    data_convert[3,t,i_z,lat,long] = compoHe
-                                    data_convert[4:number-1,t,i_z,lat,long] = compos
-                                    data_convert[number-1,t,i_z,lat,long] = np.nansum(data_convert[2:number-1,t,i_z,lat,long]*\
-                                        M_species)
-
-                        first[t,lat,long] = 1
-	if rank == 0 : 
-	    bar.animate(i_z+1)
+    if rank == 0 :
+        bar.animate(i_z+1)
+        print 'Shape of the dataset :',np.shape(data_convert)
 
     return data_convert
 
@@ -1739,538 +551,169 @@ def Boxes_conversion(P,T,h2o,gen,z,compo,delta_z,Rp,h,hmax,dim,g0,M_atm,number,T
 ########################################################################################################################
 
 
-def cylindric_assymatrix_parameter(Rp,h,alpha_step,delta_step,r_step,theta_step,theta_number,x_step,z_array,phi_rot,\
-                                   phi_obli,reso_long,reso_lat,rank,number_rank,obliquity=False,Middle=False) :
-
-    # On definit un r maximal qui est la somme du rayon planetaire et du toit de l'atmosphere, on en deduit une valeur
-    # entiere et qui est un multiple du pas en r
-
-    rmax_round = int(Rp + h - h%r_step + r_step)
-    rmax_range = int(h - h%r_step + r_step)
+def cylindric_assymatrix_parameter(Rp,h,alpha_step,delta_step,r_step,theta_step,theta_number,x_step,z_level,phi_rot,\
+                                   phi_obli,reso_long,reso_lat,rank,number_rank,Obliquity=False,Middle=False) :
 
     # On calcule la distance maximale que peut parcourir un rayon lumineux rasant comme un entier et un multiple du pas
-    # en x, L est alors la moitie de cette distance et L_round est le nombre de pas
+    # en x
 
-    L = np.sqrt((Rp+h)**2 - (Rp+0.5*r_step)**2) - (np.sqrt((Rp+h)**2 - (Rp+0.5*r_step)**2))%x_step + x_step
-    L_round = int(L/float(x_step))+1
+    if Middle == True :
+        L_max = 2*np.sqrt((Rp+h)**2 - (Rp+r_step/2.)**2)
+    else :
+        L_max = 2*np.sqrt((Rp+h)**2 - (Rp)**2)
+    if L_max/2.%r_step >= r_step/2. :
+        x_reso = 2*int(L_max/(2.*x_step)) + 1 + 1*2 + 2
+    else :
+        x_reso = 2*int(L_max/(2.*x_step)) + 1 + 1*2
     
     # Pour optimiser le calcul parallele, nous ne repartissons pas regulierement les couches a traiter par chaque coeur
     # les premieres etant plus longues a etre calculees
     
     n_level_rank = np.array([],dtype=np.int)
     n = rank
-    extra = 5
-    while n <= z_array.size - 1 : 
+    extra = 2
+    while n <= z_level.size - 1 :
         n_level_rank = np.append(n_level_rank,n) 
-	if n == z_array.size - 1 : 
-	    for i_extra in range(extra) : 
-	        n_level_rank = np.append(n_level_rank,n+i_extra+1)
-	n += number_rank	 
+        if n == z_level.size - 1 :
+            for i_extra in range(extra) :
+                n_level_rank = np.append(n_level_rank,n+i_extra+1)
+        n += number_rank
 
     # p pour la latitude, q pour la longitude, z pour l'altitude
     # Le coeur qui s'occupera de la toute derniere couche aura 5 points fictifs supplementaires charges de deliminter 
     # l'echelle en altiude des tableaux. Le 5 est arbitraire
  
-    p_grid = np.ones((int(n_level_rank.size) ,theta_number , 2*L_round + 21),dtype=np.int)*(-1)
-    q_grid = np.ones((int(n_level_rank.size) ,theta_number , 2*L_round + 21),dtype=np.int)*(-1)
-    z_grid = np.ones((int(n_level_rank.size) ,theta_number , 2*L_round + 21),dtype=np.int)*(-1)
+    p_grid = np.ones((int(n_level_rank.size) ,theta_number , x_reso),dtype='int')*(-1)
+    q_grid = np.ones((int(n_level_rank.size) ,theta_number , x_reso),dtype='int')*(-1)
+    z_grid = np.ones((int(n_level_rank.size) ,theta_number , x_reso),dtype='int')*(-1)
         
 
     if rank == 0 : 
-        if obliquity == True : 
+        if Obliquity == True :
             bar = ProgressBar(np.int(n_level_rank.size*theta_number),'Transposition on cylindric stitch (with obliquity)')
-	else : 
-	    bar = ProgressBar(np.int(n_level_rank.size*theta_number/2.),'Transposition on cylindric stitch')
+        else :
+            bar = ProgressBar(np.int(n_level_rank.size*theta_number/2.),'Transposition on cylindric stitch')
 
     for n_level in range(n_level_rank.size) :
 
         r_level = Rp + n_level_rank[n_level]*r_step
 	
-	# Si les points de la maille spherique correspondent aux proprietes en milieu de couche, alors il faut tenir
+        # Si les points de la maille spherique correspondent aux proprietes en milieu de couche, alors il faut tenir
         # compte de la demi-epaisseur de couche dans les calculs de correspondance
 
         if Middle == True :
-            r = r_level + r_step/2.
+            r = Rp + r_level + r_step/2.
         else :
-            r = r_level
-	
-	r_range = n_level
+            r = Rp + r_level
 
-        if obliquity == False :
+        # r_range est l'indice dans la maille cylindrique sur r
 
-            for i in range(0,theta_number/2+1) :
-                theta_range = i
-                theta = i*theta_step
-                stop = 0
+        if Obliquity == False :
+            theta_all = int(theta_number/2.)+1
+        else :
+            theta_all = theta_number
 
-                for x_range in range(0,2*L_round + 21) :
+        r_range = n_level
+
+        for theta_range in range(theta_all) :
+            theta = theta_range*theta_step
+
+            alpha_o_ref, alpha_o_ref_0, inv, refrac, begin = -1., -1., 0, 0, 0
+
+            for repeat in range(1,3) :
+
+                for x_pos in range(0,int((x_reso-1)/2)) :
 
                     # x est la distance au centre et peut donc etre negatif comme positif, le 0 etant au terminateur
-                    x = (x_range - L_round - 10)*x_step
+                    if Obliquity == False :
+                        x = x_pos*x_step*(-1)**(repeat)
+                        x_range = int((x_reso-1)/2.) + x_pos*(-1)**(repeat)
+                    else :
+                        if repeat == 2 :
+                            x = x_pos*x_step
+                        if repeat == 1 :
+                            x = (x_pos)*x_step - int((x_reso-1)/2 -1)*x_step
+                        x_range = int((x_reso-1)/2.) + x_pos
+
+
                     # rho est la distance au centre de l'exoplanete du point de maille considere
                     rho = np.sqrt(r**2 + x**2)
-                    # alpha est la longitude correspondante
-                    alpha = math.atan2(r*np.cos(theta),x) + phi_rot
-
-                    # Les points de longitude allant de 0 a reso_long, le dernier point etant le meme que le premier, tandis qu'en
-                    # angle ils correspondent a -pi a pi (pour le dernier), nous devons renormaliser la longitude
-
-                    if alpha > np.pi :
-
-                        alpha = -np.pi + alpha%(np.pi)
-
-                    if alpha < -np.pi :
-
-                        alpha = np.pi + alpha%(-np.pi)
-
-                    # delta est la latitude correspondante
-
-                    delta = np.arcsin((r*np.sin(theta))/(rho))
-                    #print(r,theta,x,rho,delta,alpha)
-
-                    if theta_range == 0 :
-
-                        if rho <= Rp + h :
-
-                            # Tant que le point considere est dans l'atmosphere
-
-                            if Middle == False :
-
-                                # Si on est au dessus ou sur la premiere inter-couche
-
-                                if (rho - Rp) >= z_array[1] :
-
-                                    # Si r est compris entre z_step et le toit de l'atmosphere
-
-                                    if (rho - Rp) < z_array[z_array.size-1] :
-
-                                        wh, = np.where(z_array > (rho - Rp))
-                                        up = wh[0]
-                                        down = wh[0]-1
-
-                                        # Sans Middle, tous les points entre un milieu de couche et le suivant sont identifies
-                                        # au niveau inter-couche qui les separe
-
-                                        if (rho - Rp) - z_array[down] <= (z_array[down] + z_array[up])/2. :
-                                            z = down
-                                        else :
-                                            z = up
-                                    else :
-
-                                        z = z_array.size - 1
-
-                                else :
-
-                                    # Si le point est compris entre la surface et le premier inter-couche, si r est en dessous
-                                    # du milieu de la premiere couche, alors il est identifie a la surface, sinon, a la
-                                    # premiere inter-couche
-
-                                    if (rho - Rp) <= z_array[1]/2. :
-                                        z = 0
-                                    else :
-                                        z = 1
-
-                            else :
-
-                                # z_array donne l'echelle d'altitude et les niveaux inter-couches, sur une maille Middle
-                                # l'indice 0 correspond a la surface et les autres aux milieux de couche, en cherchant
-                                # l'indice pour lesquel z_array est superieur a r, on identifie directement l'indice
-                                # correspondant dans la maille Middle
-
-                                if (rho - Rp) < h :
-
-                                    wh, = np.where(z_array > (rho - Rp))
-                                    z = wh[0]
-
-                                else :
-
-                                    z = z_array.size - 1
 
                     if rho <= Rp + h :
+                        if repeat == 1 :
+                            if begin == 0 :
+                                begin = x_range
+                        if repeat == 2 :
+                            begin = 0
+                        # On verifie que le point considere est dans l'atmosphere
+                        # alpha est la longitude correspondante
+                        alpha = math.atan2(r*np.cos(theta),x) + phi_rot
 
-                        # A partir de la longitude, on en deduit l'indice q correspondant dans la maille spherique, cet
-                        # indice doit evoluer entre 0 (alpha -pi) et reso_long (alpha pi), sachant que le premier et le
-                        # dernier point sont identiques
-
-                        if alpha%alpha_step < alpha_step/2. :
-                            alpha_norm = alpha - alpha%alpha_step
-                            q = reso_long/2 + int(round(alpha_norm*reso_long/(2*np.pi)))
+                        # Les points de longitude allant de 0 a reso_long, le dernier point etant le meme que le premier, tandis qu'en
+                        # angle ils correspondent a -pi a pi (pour le dernier), nous devons renormaliser la longitude
+                        if Obliquity == False :
+                            if alpha > np.pi :
+                                alpha = -np.pi + alpha%(np.pi)
+                            if alpha < -np.pi :
+                                alpha = np.pi + alpha%(-np.pi)
                         else :
-                            alpha_norm = alpha - alpha%alpha_step + alpha_step
-                            q = reso_long/2 + int(round(alpha_norm*reso_long/(2*np.pi)))
+                            if alpha >= -np.pi/2. and alpha <= np.pi :
+                                alpha += np.pi/2.
+                            else :
+                                alpha += 5*np.pi/2.
 
-                        # A partir de la latitude on en deduit l'indice p correpondant dans la maille spherique, cet indice
-                        # doit evoluer entre 0 (-pi/2) et reso_lat (pi/2)
+                        # delta est la latitude correspondante
+                        delta = np.arcsin((r*np.sin(theta))/(rho))
 
-                        if delta%delta_step < delta_step/2. :
-                            delta_norm = delta - delta%delta_step
-                            p = int(round(delta_norm*reso_lat/np.pi+reso_lat/2))
-                        else :
-                            delta_norm = delta - delta%delta_step + delta_step
-                            p = int(round(delta_norm*reso_lat/np.pi+reso_lat/2))
+                        p, q, z, alpha_o_ref, alpha_o_ref_0, inv, refrac, begin = latlongalt(Rp,h,r,rho,r_step,z_level,delta,delta_step,\
+                                                        reso_lat,alpha,alpha_o_ref,alpha_o_ref_0,alpha_step,reso_long,phi_obli,x,x_range,\
+                                                        x_reso,x_step,theta_range,theta_number,begin,inv,refrac,True,Middle,Obliquity)
 
-                        if q == reso_long :
-                            q = 0
+                        if Obliquity == False :
 
-                        p_grid[r_range,theta_range,x_range] = p
-                        if theta_range != theta_number/4 or theta_range != 3*theta_number/4 :
-                            q_grid[r_range,theta_range,x_range] = q
-                        else :
-                            q_grid[r_range,theta_range,x_range] = q_grid[r_range,theta_range,x_range-1]
-
-                        # Etant donne la symetrie, on generaliser z pour tous les theta et en deduire les indices en longitude
-                        # et en latitude par rotation, les longitudes sont les memes pour theta et theta_number - theta
-
-                        if theta_range == 0 :
-                            z_grid[r_range,theta_range,x_range] = z
-                        else :
-                            z_grid[r_range,theta_range,x_range] = z_grid[r_range,0,x_range]
+                            p_grid[r_range,theta_range,x_range] = p
                             if theta_range != theta_number/4 or theta_range != 3*theta_number/4 :
-                                q_grid[r_range,theta_number - theta_range,x_range] = q
+                                q_grid[r_range,theta_range,x_range] = q
                             else :
-                                q_grid[r_range,theta_number - theta_range,x_range] = q_grid[r_range,theta_range,x_range-1]
-                            p_grid[r_range,theta_number - theta_range,x_range] = reso_lat - p
-                            z_grid[r_range,theta_number - theta_range,x_range] = z_grid[r_range,0,x_range]
+                                q_grid[r_range,theta_range,x_range] = q_grid[r_range,theta_range,x_range-1]
+
+                            # Conditions de symetrie
+                            if theta_range == 0 :
+                                z_grid[r_range,theta_range,x_range] = z
+                            else :
+                                z_grid[r_range,theta_range,x_range] = z_grid[r_range,0,x_range]
+                                if theta_range != theta_number/4 or theta_range != 3*theta_number/4 :
+                                    q_grid[r_range,theta_number - theta_range,x_range] = q
+                                else :
+                                    q_grid[r_range,theta_number - theta_range,x_range] = q_grid[r_range,theta_range,x_range-1]
+                                p_grid[r_range,theta_number - theta_range,x_range] = reso_lat - p
+                                z_grid[r_range,theta_number - theta_range,x_range] = z_grid[r_range,0,x_range]
+
+                        else :
+
+                            if repeat == 2 and x_range != int((x_reso-1)/2.) :
+                                p_grid[r_range,theta_range,x_range] = p
+                                z_grid[r_range,theta_range,x_range] = z
+                                if begin == -1 :
+                                    q_grid[r_range,theta_range,x_range] = q[0]
+                                    q_grid[r_range,theta_range,x_range-1] = q[1]
+                                    begin = -2
+                                else :
+                                    q_grid[r_range,theta_range,x_range] = q
+                            if repeat == 1 :
+                                p_grid[r_range,theta_range,x_pos+1] = p
+                                z_grid[r_range,theta_range,x_pos+1] = z
+                                if begin == -1 :
+                                    q_grid[r_range,theta_range,x_pos+1] = q[0]
+                                    q_grid[r_range,theta_range,x_pos] = q[1]
+                                    begin = -2
+                                else :
+                                    q_grid[r_range,theta_range,x_pos+1] = q
+
+                        #print x_range, x_pos, begin, q, alpha_o_ref, alpha_o_ref_0
 
                 if rank == 0 : 
-	            bar.animate(r_range*theta_number/2.+theta_range)
-	    
-        else :
-
-            for i in range(0,theta_number) :
-                theta_range = i
-                theta = i*theta_step
-                alpha_o_ref = -1
-                begin = 0
-                inv = 0
-                refrac = 0
-
-                for x_range in range(0,2*L_round + 21) :
-
-                    # x est la distance au centre et peut donc etre negatif comme positif, le 0 etant au terminateur
-                    x = (x_range - L_round - 10)*x_step
-                    # rho est la distance au centre de l'exoplanete du point de maille considere
-                    rho = np.sqrt(r**2 + x**2)
-                    # alpha est la longitude correspondante
-                    alpha = math.atan2(r*np.cos(theta),x) + phi_rot
-
-                    # delta est la latitude correspondante
-
-                    delta = np.arcsin((r*np.sin(theta))/(rho))
-
-                    if rho <= Rp + h :
-
-                        if begin == 0 :
-                            begin = x_range
-
-                        # Tant que le point considere est dans l'atmosphere
-
-                        if Middle == False :
-
-                            # Si on est au dessus ou sur la premiere inter-couche
-                            if (rho - Rp) >= z_array[1] :
-
-                                # Si r est compris entre z_step et le toit de l'atmosphere
-                                if (rho - Rp) < z_array[z_array.size-1] :
-
-                                    wh, = np.where(z_array > (rho - Rp))
-                                    up = wh[0]
-                                    down = wh[0]-1
-
-                                    # Sans Middle, tous les points entre un milieu de couche et le suivant sont identifies
-                                    # au niveau inter-couche qui les separe
-                                    if (rho - Rp) - z_array[down] <= (z_array[down] + z_array[up])/2. :
-                                        z = down
-                                    else :
-                                        z = up
-                                else :
-
-                                    z = z_array.size - 1
-
-                            else :
-
-                                # Si le point est compris entre la surface et le premier inter-couche, si r est en dessous
-                                # du milieu de la premiere couche, alors il est identifie a la surface, sinon, a la
-                                # premiere inter-couche
-                                if (rho - Rp) <= z_array[1]/2. :
-                                    z = 0
-                                else :
-                                    z = 1
-
-                        else :
-
-                            # z_array donne l'echelle d'altitude et les niveaux inter-couches, sur une maille Middle
-                            # l'indice 0 correspond a la surface et les autres aux milieux de couche, en cherchant
-                            # l'indice pour lesquel z_array est superieur a r, on identifie directement l'indice
-                            # correspondant dans la maille Middle
-                            if (rho - Rp) < h :
-
-                                wh, = np.where(z_array > (rho - Rp))
-                                z = wh[0]
-
-                            else :
-
-                                z = z_array.size - 1
-
-                        # A partir de la longitude, on en deduit l'indice q correspondant dans la maille spherique, cet
-                        # indice doit evoluer entre 0 (alpha -pi) et reso_long (alpha pi), sachant que le premier et le
-                        # dernier point sont identiques
-
-                        if alpha >= -np.pi/2. and alpha <= np.pi :
-                            alpha += np.pi/2.
-                        else :
-                            alpha += 5*np.pi/2.
-
-                        delta_o = np.arcsin(np.sin(delta)*np.cos(phi_obli)+np.cos(delta)*np.sin(phi_obli)*np.sin(alpha))
-                        #alpha_o = math.atan2((-np.sin(delta)*np.sin(phi_obli)+np.cos(delta)*np.cos(phi_obli)*np.sin(alpha)),\
-                        #                                    (np.cos(delta)*np.cos(alpha)))
-                        if np.abs(phi_obli) != np.pi/2. or begin == x_range :
-                            acos = np.cos(delta)*np.cos(alpha)/np.cos(delta_o)
-                            if acos < -1.0 or acos > 1.0 :
-                                print 'Check the longitude for theta %i : value that abort the process : '%(theta_range), \
-                                    np.cos(delta)*np.cos(alpha)/np.cos(delta_o)
-                                if acos < -1.0 :
-                                    acos = -1.0
-                                else :
-                                    acos = 1.0
-                            alpha_o = np.arccos(acos)
-                        else :
-                            alpha_o = alpha_o_ref
-
-                        if np.abs(phi_obli) < np.pi/2. :
-                            x_ref = r*np.tan(np.abs(phi_obli))
-                        else :
-                            if np.abs(phi_obli) == np.pi :
-                                x_ref = 0.
-                            else :
-                                x_ref = r*np.tan(np.pi-np.abs(phi_obli))
-
-                        if theta_range < theta_number/4 or theta_range > 3*theta_number/4 :
-                            # la longitude equatoriale est comprise entre pi/2 et 3pi/2 tandis que l'angle de reference des
-                            # donnees GCM est compris entre 0 et pi
-
-                            # l'angle calcule ne peut depasser pi, donc il faut lui specifier dans quelle tranche il se trouve
-
-                            if np.abs(phi_obli) < np.pi/2. :
-
-                                if alpha_o > alpha_o_ref :
-                                    alpha_o_ref = alpha_o
-                                    alpha_o = 2*np.pi - alpha_o
-                                elif alpha_o == alpha_o_ref :
-                                    if inv == 0 :
-                                        alpha_o_ref = alpha_o
-                                        alpha_o = 2*np.pi - alpha_o
-                                    else :
-                                        alpha_o_ref = alpha_o
-                                else :
-                                    alpha_o_ref = alpha_o
-                                    if x_range == begin+1 :
-                                        refrac = 1
-
-                            if phi_obli == np.pi/2. :
-
-                                if theta_range <= theta_number/4. :
-                                    alpha_o = 2*np.pi - alpha_o
-
-                            if phi_obli == - np.pi/2. :
-
-                                if theta_range > 3*theta_number/4. :
-                                    alpha_o = 2*np.pi - alpha_o
-
-                            if np.abs(phi_obli) > np.pi/2. :
-
-                                if alpha_o > alpha_o_ref :
-                                    alpha_o_ref = alpha_o
-                                elif alpha_o == alpha_o_ref :
-                                    if inv == 0 :
-                                        alpha_o_ref = alpha_o
-                                    else :
-                                        alpha_o_ref = alpha_o
-                                        alpha_o = 2*np.pi - alpha_o
-                                else :
-                                    alpha_o_ref = alpha_o
-                                    alpha_o = 2*np.pi - alpha_o
-                                    if x_range == begin+1 :
-                                        refrac = 1
-
-                        if theta_range == theta_number/4. :
-
-                            if phi_obli > 0 :
-                                if phi_obli < np.pi/2. :
-                                    if x < x_ref :
-                                        alpha_o = 2*np.pi - alpha_o
-                                else :
-                                    if phi_obli == np.pi/2. :
-                                        alpha_o = 2*np.pi - alpha_o
-                                    else :
-                                        if x > -x_ref :
-                                            alpha_o = 2*np.pi - alpha_o
-                            else :
-                                if phi_obli < -np.pi/2. :
-                                    if x < -x_ref :
-                                        alpha_o = 2*np.pi - alpha_o
-                                else :
-                                    if phi_obli != -np.pi/2. :
-                                        if x > x_ref :
-                                            alpha_o = 2*np.pi - alpha_o
-
-                        if theta_range > theta_number/4. and theta_range < 3*theta_number/4. :
-                            # la longitude equatoriale est comprise entre 3pi/2 et pi/2 tandis que l'angle de reference des
-                            # donnees GCM est compris entre -pi et 0
-
-                            # l'angle calcule ne peut depasser pi, donc il faut lui specifier dans quelle tranche il se trouve
-
-                            if np.abs(phi_obli) < np.pi/2. :
-
-                                if alpha_o < alpha_o_ref :
-                                    alpha_o_ref = alpha_o
-                                    alpha_o = 2*np.pi - alpha_o
-                                    if x_range == begin+1 :
-                                        refrac = 1
-                                elif alpha_o == alpha_o_ref :
-                                    if inv == 0 :
-                                        alpha_o_ref = alpha_o
-                                        alpha_o = 2*np.pi - alpha_o
-                                    else :
-                                        alpha_o_ref = alpha_o
-                                else :
-                                    alpha_o_ref = alpha_o
-
-                            if phi_obli == np.pi/2. :
-
-                                if theta_range > theta_number/4. and theta_range < theta_number/2. :
-                                    alpha_o = 2*np.pi - alpha_o
-
-                            if phi_obli == - np.pi/2. :
-
-                                if theta_range > theta_number/2. and theta_range <= 3*theta_number/4. :
-                                    alpha_o = 2*np.pi - alpha_o
-
-                            if np.abs(phi_obli) > np.pi/2. :
-
-                                if alpha_o < alpha_o_ref :
-                                    alpha_o_ref = alpha_o
-                                    if x_range == begin+1 :
-                                        refrac = 1
-                                elif alpha_o == alpha_o_ref :
-                                    if inv == 0 :
-                                        alpha_o_ref = alpha_o
-                                    else :
-                                        alpha_o_ref = alpha_o
-                                        alpha_o = 2*np.pi - alpha_o
-                                else :
-                                    alpha_o_ref = alpha_o
-                                    alpha_o = 2*np.pi - alpha_o
-
-                        if theta_range == 3*theta_number/4. :
-
-                            if phi_obli > 0 :
-                                if phi_obli < np.pi/2. :
-                                    if x < -x_ref :
-                                        alpha_o = 2*np.pi - alpha_o
-                                else :
-                                    if phi_obli != np.pi/2. :
-                                        if x > x_ref :
-                                            alpha_o = 2*np.pi - alpha_o
-                            else :
-                                if phi_obli < -np.pi/2. :
-                                    if x < x_ref :
-                                        alpha_o = 2*np.pi - alpha_o
-                                else :
-                                    if phi_obli == np.pi/2. :
-                                        alpha_o = 2*np.pi - alpha_o
-                                    else :
-                                        if x > -x_ref :
-                                            alpha_o = 2*np.pi - alpha_o
-
-                        if x_range == begin :
-                            alpha_o_ref_0 = alpha_o
-
-                        if x_range != begin and x_range != begin+1 :
-
-                            if alpha_o%alpha_step < alpha_step/2. :
-                                alpha_norm = alpha_o - alpha_o%alpha_step
-                            else :
-                                alpha_norm = alpha_o - alpha_o%alpha_step + alpha_step
-
-                            if alpha_norm >= 0. and alpha_norm <= 3*np.pi/2. :
-                                q_o = int(reso_long/4 + int(round(alpha_norm*reso_long/(2*np.pi))))
-                            if alpha_norm > 3*np.pi/2. and alpha_norm <= 2*np.pi :
-                                q_o = int(int(round(alpha_norm*reso_long/(2*np.pi)))-3*reso_long/4)
-
-                            if q_o == reso_long :
-                                q_o = 0
-
-                            q_grid[r_range,theta_range,x_range] = q_o
-
-                        else :
-
-                            if phi_obli == np.pi/2. :
-
-                                if alpha_o%alpha_step < alpha_step/2. :
-                                    alpha_norm = alpha_o - alpha_o%alpha_step
-                                else :
-                                    alpha_norm = alpha_o - alpha_o%alpha_step + alpha_step
-
-                                if alpha_norm >= 0. and alpha_norm <= 3*np.pi/2. :
-                                    q_o = int(reso_long/4 + int(round(alpha_norm*reso_long/(2*np.pi))))
-                                if alpha_norm > 3*np.pi/2. and alpha_norm <= 2*np.pi :
-                                    q_o = int(int(round(alpha_norm*reso_long/(2*np.pi)))-3*reso_long/4)
-
-                                if q_o == reso_long :
-                                    q_o = 0
-
-                                q_grid[r_range,theta_range,x_range] = q_o
-
-                            else :
-
-                                if x_range == begin+1 :
-
-                                    if refrac == 1 :
-                                        alpha_o_ref_0 = 2*np.pi - alpha_o_ref_0
-
-                                    if alpha_o%alpha_step < alpha_step/2. :
-                                        alpha_norm = alpha_o - alpha_o%alpha_step
-                                    else :
-                                        alpha_norm = alpha_o - alpha_o%alpha_step + alpha_step
-
-                                    if alpha_norm >= 0. and alpha_norm <= 3*np.pi/2. :
-                                        q_o = int(reso_long/4 + int(round(alpha_norm*reso_long/(2*np.pi))))
-                                    if alpha_norm > 3*np.pi/2. and alpha_norm <= 2*np.pi :
-                                        q_o = int(int(round(alpha_norm*reso_long/(2*np.pi)))-3*reso_long/4)
-
-                                    if q_o == reso_long :
-                                        q_o = 0
-
-                                    q_grid[r_range,theta_range,x_range] = q_o
-
-                                    if alpha_o_ref_0%alpha_step < alpha_step/2. :
-                                        alpha_norm = alpha_o_ref_0 - alpha_o_ref_0%alpha_step
-                                    else :
-                                        alpha_norm = alpha_o_ref_0 - alpha_o_ref_0%alpha_step + alpha_step
-
-                                    if alpha_norm >= 0. and alpha_norm <= 3*np.pi/2. :
-                                        q_o = int(reso_long/4 + int(round(alpha_norm*reso_long/(2*np.pi))))
-                                    if alpha_norm > 3*np.pi/2. and alpha_norm <= 2*np.pi :
-                                        q_o = int(int(round(alpha_norm*reso_long/(2*np.pi)))-3*reso_long/4)
-
-                                    if q_o == reso_long :
-                                        q_o = 0
-
-                                    q_grid[r_range,theta_range,x_range-1] = q_o
-
-                        if delta_o%delta_step < delta_step/2. :
-                            delta_norm = delta_o - delta_o%delta_step
-                            p_o = int(round(delta_norm*reso_lat/np.pi+reso_lat/2))
-                        else :
-                            delta_norm = delta_o - delta_o%delta_step + delta_step
-                            p_o = int(round(delta_norm*reso_lat/np.pi+reso_lat/2))
-
-                        p_grid[r_range,theta_range,x_range] = p_o
-                        z_grid[r_range,theta_range,x_range] = z
-
-                if rank == 0 : 
-	            bar.animate(r_range*theta_number+theta_range)
+                    bar.animate(r_range*theta_number+theta_range)
 
     return p_grid,q_grid,z_grid,n_level_rank
 
@@ -2333,15 +776,11 @@ def dx_correspondance(p_grid,q_grid,z_grid,data,x_step,r_step,theta_step,Rp,g0,h
                 dist += x_step
 
                 if dist <= Lmax :
-
                     mid = 0
                     mid_y = 0
                     passe = 0
-
                 else :
-
                     if dist == Lmax + x_step/2. :
-
                         mid = 2
                         mid_y = 2
                         passe = 1
@@ -2360,11 +799,8 @@ def dx_correspondance(p_grid,q_grid,z_grid,data,x_step,r_step,theta_step,Rp,g0,h
                     if p_grid[i,j,k] != p_grid[i,j,k-1] or q_grid[i,j,k] != q_grid[i,j,k-1] or z_grid[i,j,k] != z_grid[i,j,k-1] or passe == 1 :
 
                         mess = ''
-
                         fin = int(k - 1)
-
                         dx_init[i,j,x] = fin - deb + 1
-
                         deb = int(k)
 
                         if Integral == True :
@@ -2436,15 +872,9 @@ def dx_correspondance(p_grid,q_grid,z_grid,data,x_step,r_step,theta_step,Rp,g0,h
                                                     z_2 = z_ref[i_z]
 
                                                     if Ord == True :
-                                                        order_init[0,i,j,x] = z_grid[i,j,k-1+ind[0,i_z]]
-                                                        order_init[1,i,j,x] = p_grid[i,j,k-1+ind[1,i_z]]
-                                                        order_init[2,i,j,x] = q_grid[i,j,k-1+ind[2,i_z]]
-                                                        order_init[3,i,j,x] = k-1+ind[0,i_z]
-                                                        order_init[4,i,j,x] = k-1+ind[1,i_z]
-                                                        order_init[5,i,j,x] = k-1+ind[2,i_z]
+                                                        order_init[:,i,j,x] = order_assign(z_grid[i,j,k-1+ind[0,i_z]],p_grid[i,j,k-1+ind[1,i_z]],q_grid[i,j,k-1+ind[2,i_z]],k,ind[:,i_z],[1,1,1])
 
                                                     x = x + 1
-
                                                 x = x - 1
 
                                             else :
@@ -2484,15 +914,9 @@ def dx_correspondance(p_grid,q_grid,z_grid,data,x_step,r_step,theta_step,Rp,g0,h
                                                     z_2 = z_ref[i_z]
 
                                                     if Ord == True :
-                                                        order_init[0,i,j,x] = z_grid[i,j,k-1+ind[0,i_z]]
-                                                        order_init[1,i,j,x] = p_grid[i,j,k-1+ind[1,i_z]]
-                                                        order_init[2,i,j,x] = q_grid[i,j,k-1]
-                                                        order_init[3,i,j,x] = k-1+ind[0,i_z]
-                                                        order_init[4,i,j,x] = k-1+ind[1,i_z]
-                                                        order_init[5,i,j,x] = k-1
+                                                        order_init[:,i,j,x] = order_assign(z_grid[i,j,k-1+ind[0,i_z]],p_grid[i,j,k-1+ind[1,i_z]],q_grid[i,j,k-1],k,ind[:,i_z],[1,1,0])
 
                                                     x = x + 1
-
                                                 x = x - 1
 
                                         else :
@@ -2532,15 +956,9 @@ def dx_correspondance(p_grid,q_grid,z_grid,data,x_step,r_step,theta_step,Rp,g0,h
                                                 z_2 = z_ref[i_z]
 
                                                 if Ord == True :
-                                                    order_init[0,i,j,x] = z_grid[i,j,k-1+ind[0,i_z]]
-                                                    order_init[1,i,j,x] = p_grid[i,j,k-1]
-                                                    order_init[2,i,j,x] = q_grid[i,j,k-1+ind[1,i_z]]
-                                                    order_init[3,i,j,x] = k-1+ind[0,i_z]
-                                                    order_init[4,i,j,x] = k-1
-                                                    order_init[5,i,j,x] = k-1+ind[1,i_z]
+                                                    order_init[:,i,j,x] = order_assign(z_grid[i,j,k-1+ind[0,i_z]],p_grid[i,j,k-1],q_grid[i,j,k-1+ind[1,i_z]],k,ind[:,i_z],[1,0,1])
 
                                                 x = x + 1
-
                                             x = x - 1
 
                                     else :
@@ -2550,7 +968,7 @@ def dx_correspondance(p_grid,q_grid,z_grid,data,x_step,r_step,theta_step,Rp,g0,h
 
                                         if Gravity == False :
                                             g_1 = g0/(1+z_1/Rp)**2
-                                            g_0 = g_0 = g0/((1+(z_grid[i,j,k-1]-0.5)*r_step/Rp)*(1+z_1/Rp))
+                                            g_0 = g0/((1+(z_grid[i,j,k-1]-0.5)*r_step/Rp)*(1+z_1/Rp))
                                             P_1 = data[0,t,z_grid[i,j,k-1],p_grid[i,j,k-1],q_grid[i,j,k-1]]*np.exp(-M_1*g_0/(R_gp*T_1)*(z_1-(z_grid[i,j,k-1]-0.5)*r_step))
                                             integ = integrate.quad(lambda z:P_1/(R_gp*T_1)*N_A*np.exp(-M_1*g_1/(R_gp*T_1)*z/(1+z/(Rp+z_1)))*(Rp+z_1+z)/(np.sqrt((Rp+z_1+z)**2-(Rp+r)**2)),0,z_2-z_1)
                                         else :
@@ -2567,13 +985,7 @@ def dx_correspondance(p_grid,q_grid,z_grid,data,x_step,r_step,theta_step,Rp,g0,h
                                         z_2 = z_1
 
                                         if Ord == True :
-                                            order_init[0,i,j,x] = z_grid[i,j,k-1]
-                                            order_init[1,i,j,x] = p_grid[i,j,k-1]
-                                            order_init[2,i,j,x] = q_grid[i,j,k-1]
-                                            order_init[3,i,j,x] = k-1
-                                            order_init[4,i,j,x] = k-1
-                                            order_init[5,i,j,x] = k-1
-
+                                            order_init[:,i,j,x] = order_assign(z_grid[i,j,k-1],p_grid[i,j,k-1],q_grid[i,j,k-1],k,np.array([]),[0,0,0])
 
                                 else :
 
@@ -2622,15 +1034,9 @@ def dx_correspondance(p_grid,q_grid,z_grid,data,x_step,r_step,theta_step,Rp,g0,h
                                                 z_2 = z_ref[i_z]
 
                                                 if Ord == True :
-                                                    order_init[0,i,j,x] = z_grid[i,j,k-1]
-                                                    order_init[1,i,j,x] = p_grid[i,j,k-1+ind[0,i_z]]
-                                                    order_init[2,i,j,x] = q_grid[i,j,k-1+ind[1,i_z]]
-                                                    order_init[3,i,j,x] = k-1
-                                                    order_init[4,i,j,x] = k-1+ind[0,i_z]
-                                                    order_init[5,i,j,x] = k-1+ind[1,i_z]
+                                                    order_init[:,i,j,x] = order_assign(z_grid[i,j,k-1],p_grid[i,j,k-1+ind[0,i_z]],q_grid[i,j,k-1+ind[1,i_z]],k,ind[:,i_z],[0,1,1])
 
                                                 x = x + 1
-
                                             x = x - 1
 
                                         else :
@@ -2657,18 +1063,12 @@ def dx_correspondance(p_grid,q_grid,z_grid,data,x_step,r_step,theta_step,Rp,g0,h
                                             z_2 = z_1
 
                                             if Ord == True :
-                                                order_init[0,i,j,x] = z_grid[i,j,k-1]
-                                                order_init[1,i,j,x] = p_grid[i,j,k-1]
-                                                order_init[2,i,j,x] = q_grid[i,j,k-1]
-                                                order_init[3,i,j,x] = k-1
-                                                order_init[4,i,j,x] = k-1
-                                                order_init[5,i,j,x] = k-1
+                                                order_init[:,i,j,x] = order_assign(z_grid[i,j,k-1],p_grid[i,j,k-1],q_grid[i,j,k-1],k,np.array([]),[0,0,0])
 
                                     else :
 
                                         z_1 = np.sqrt(1+(np.cos(j*theta_step)/np.tan(((q_grid[i,j,k]+q_grid[i,j,k-1])/np.float(reso_long)-1)*np.pi))**2)*(Rp+r) - Rp
                                         mess += 'q'
-
                                         M_1 = data[number-1,t,z_grid[i,j,k-1],p_grid[i,j,k-1],q_grid[i,j,k-1]]
                                         T_1 = data[1,t,z_grid[i,j,k-1],p_grid[i,j,k-1],q_grid[i,j,k-1]]
 
@@ -2691,12 +1091,7 @@ def dx_correspondance(p_grid,q_grid,z_grid,data,x_step,r_step,theta_step,Rp,g0,h
                                         z_2 = z_1
 
                                         if Ord == True :
-                                            order_init[0,i,j,x] = z_grid[i,j,k-1]
-                                            order_init[1,i,j,x] = p_grid[i,j,k-1]
-                                            order_init[2,i,j,x] = q_grid[i,j,k-1]
-                                            order_init[3,i,j,x] = k-1
-                                            order_init[4,i,j,x] = k-1
-                                            order_init[5,i,j,x] = k-1
+                                            order_init[:,i,j,x] = order_assign(z_grid[i,j,k-1],p_grid[i,j,k-1],q_grid[i,j,k-1],k,np.array([]),[0,0,0])
 
                             else :
 
@@ -2705,17 +1100,13 @@ def dx_correspondance(p_grid,q_grid,z_grid,data,x_step,r_step,theta_step,Rp,g0,h
                                     if p_grid[i,j,k] != p_grid[i,j,k-1] or q_grid[i,j,k] != q_grid[i,j,k-1] or z_grid[i,j,k] != z_grid[i,j,k-1] :
 
                                         if p_grid[i,j,k] != p_grid[i,j,k+1] or q_grid[i,j,k] != q_grid[i,j,k+1] or z_grid[i,j,k] != z_grid[i,j,k+1] :
-
                                             z_1 = np.sqrt((Rp+r)**2+(x_step/2.)**2) - Rp
                                             mid = 1
                                             center = 2
-
                                         else :
-
                                             z_1 = np.sqrt((Rp+r)**2+(x_step/2.)**2) - Rp
                                             mid = 1
                                             center = 1
-
 
                                     else :
 
@@ -2726,13 +1117,11 @@ def dx_correspondance(p_grid,q_grid,z_grid,data,x_step,r_step,theta_step,Rp,g0,h
                                 else :
 
                                     if mid == 1 and center != 2 :
-
                                         mid = 0
                                         center = 0
                                         z_1 = r
 
                                     if mid == 1 and center == 2 :
-
                                         mid = 0
                                         center = 1
 
@@ -2760,12 +1149,7 @@ def dx_correspondance(p_grid,q_grid,z_grid,data,x_step,r_step,theta_step,Rp,g0,h
                                             pdx_init[i,j,x] = integ[0]
 
                                         if Ord == True :
-                                            order_init[0,i,j,x] = z_grid[i,j,k-1]
-                                            order_init[1,i,j,x] = p_grid[i,j,k-1]
-                                            order_init[2,i,j,x] = q_grid[i,j,k-1]
-                                            order_init[3,i,j,x] = k-1
-                                            order_init[4,i,j,x] = k-1
-                                            order_init[5,i,j,x] = k-1
+                                            order_init[:,i,j,x] = order_assign(z_grid[i,j,k-1],p_grid[i,j,k-1],q_grid[i,j,k-1],k,np.array([]),[0,0,0])
 
                                         x = x + 1
 
@@ -2787,12 +1171,7 @@ def dx_correspondance(p_grid,q_grid,z_grid,data,x_step,r_step,theta_step,Rp,g0,h
                                             pdx_init[i,j,x] += integ[0]
 
                                         if Ord == True :
-                                            order_init[0,i,j,x] = z_grid[i,j,k]
-                                            order_init[1,i,j,x] = p_grid[i,j,k]
-                                            order_init[2,i,j,x] = q_grid[i,j,k]
-                                            order_init[3,i,j,x] = k
-                                            order_init[4,i,j,x] = k
-                                            order_init[5,i,j,x] = k
+                                            order_init[:,i,j,x] = order_assign(z_grid[i,j,k],p_grid[i,j,k],q_grid[i,j,k],k+1,np.array([]),[0,0,0])
 
                                         if center == 2 :
 
@@ -2813,12 +1192,7 @@ def dx_correspondance(p_grid,q_grid,z_grid,data,x_step,r_step,theta_step,Rp,g0,h
                                                 pdx_init[i,j,x] += integ[0]
 
                                             if Ord == True :
-                                                order_init[0,i,j,x] = z_grid[i,j,k]
-                                                order_init[1,i,j,x] = p_grid[i,j,k]
-                                                order_init[2,i,j,x] = q_grid[i,j,k]
-                                                order_init[3,i,j,x] = k
-                                                order_init[4,i,j,x] = k
-                                                order_init[5,i,j,x] = k
+                                                order_init[:,i,j,x] = order_assign(z_grid[i,j,k],p_grid[i,j,k],q_grid[i,j,k],k+1,np.array([]),[0,0,0])
 
                                     else :
 
@@ -2842,12 +1216,7 @@ def dx_correspondance(p_grid,q_grid,z_grid,data,x_step,r_step,theta_step,Rp,g0,h
                                             pdx_init[i,j,x] = integ[0]
 
                                         if Ord == True :
-                                            order_init[0,i,j,x] = z_grid[i,j,k-1]
-                                            order_init[1,i,j,x] = p_grid[i,j,k-1]
-                                            order_init[2,i,j,x] = q_grid[i,j,k-1]
-                                            order_init[3,i,j,x] = k-1
-                                            order_init[4,i,j,x] = k-1
-                                            order_init[5,i,j,x] = k-1
+                                            order_init[:,i,j,x] = order_assign(z_grid[i,j,k-1],p_grid[i,j,k-1],q_grid[i,j,k-1],k,np.array([]),[0,0,0])
 
                                     z_1 = z_2
 
@@ -2856,27 +1225,19 @@ def dx_correspondance(p_grid,q_grid,z_grid,data,x_step,r_step,theta_step,Rp,g0,h
                                     if center != 1 :
 
                                         if z_grid[i,j,k] != z_grid[i,j,k-1] :
-
                                             z_2 = z_grid[i,j,k-1]*r_step
                                             mess += 'z'
 
                                             if p_grid[i,j,k] != p_grid[i,j,k-1] :
-
                                                 z_2_2 = (Rp+r)*(np.sin(j*theta_step)/(np.sin((p_grid[i,j,k]+p_grid[i,j,k-1]-reso_lat)/2.*np.pi/np.float(reso_lat))))-Rp
                                                 mess += 'and p'
-
                                             else :
-
                                                 z_2_2 = -1
 
-
                                             if q_grid[i,j,k] != q_grid[i,j,k-1] :
-
                                                 z_2_3 = np.sqrt(1+(np.cos(j*theta_step)/np.tan(((q_grid[i,j,k]+q_grid[i,j,k-1])/np.float(reso_long)-1)*np.pi))**2)*(Rp+r) - Rp
                                                 mess += 'and q'
-
                                             else :
-
                                                 z_2_3 = -1
 
                                             if z_2_2 != -1 or z_2_3 != -1 :
@@ -2920,15 +1281,9 @@ def dx_correspondance(p_grid,q_grid,z_grid,data,x_step,r_step,theta_step,Rp,g0,h
                                                             z_1 = z_ref[i_z]
 
                                                             if Ord == True :
-                                                                order_init[0,i,j,x] = z_grid[i,j,k-1+ind[0,i_z]]
-                                                                order_init[1,i,j,x] = p_grid[i,j,k-1+ind[1,i_z]]
-                                                                order_init[2,i,j,x] = q_grid[i,j,k-1+ind[2,i_z]]
-                                                                order_init[3,i,j,x] = k-1+ind[0,i_z]
-                                                                order_init[4,i,j,x] = k-1+ind[1,i_z]
-                                                                order_init[5,i,j,x] = k-1+ind[2,i_z]
+                                                                order_init[:,i,j,x] = order_assign(z_grid[i,j,k-1+ind[0,i_z]],p_grid[i,j,k-1+ind[1,i_z]],q_grid[i,j,k-1+ind[2,i_z]],k,ind[:,i_z],[1,1,1])
 
                                                             x = x + 1
-
                                                         x = x - 1
 
                                                     else :
@@ -2968,15 +1323,9 @@ def dx_correspondance(p_grid,q_grid,z_grid,data,x_step,r_step,theta_step,Rp,g0,h
                                                             z_1 = z_ref[i_z]
 
                                                             if Ord == True :
-                                                                order_init[0,i,j,x] = z_grid[i,j,k-1+ind[0,i_z]]
-                                                                order_init[1,i,j,x] = p_grid[i,j,k-1+ind[1,i_z]]
-                                                                order_init[2,i,j,x] = q_grid[i,j,k-1]
-                                                                order_init[3,i,j,x] = k-1+ind[0,i_z]
-                                                                order_init[4,i,j,x] = k-1+ind[1,i_z]
-                                                                order_init[5,i,j,x] = k-1
+                                                                order_init[:,i,j,x] = order_assign(z_grid[i,j,k-1+ind[0,i_z]],p_grid[i,j,k-1+ind[1,i_z]],q_grid[i,j,k-1],k,ind[:,i_z],[1,1,0])
 
                                                             x = x + 1
-
                                                         x = x - 1
 
                                                 else :
@@ -3016,15 +1365,9 @@ def dx_correspondance(p_grid,q_grid,z_grid,data,x_step,r_step,theta_step,Rp,g0,h
                                                         z_1 = z_ref[i_z]
 
                                                         if Ord == True :
-                                                            order_init[0,i,j,x] = z_grid[i,j,k-1+ind[0,i_z]]
-                                                            order_init[1,i,j,x] = p_grid[i,j,k-1]
-                                                            order_init[2,i,j,x] = q_grid[i,j,k-1+ind[1,i_z]]
-                                                            order_init[3,i,j,x] = k-1+ind[0,i_z]
-                                                            order_init[4,i,j,x] = k-1
-                                                            order_init[5,i,j,x] = k-1+ind[1,i_z]
+                                                            order_init[:,i,j,x] = order_assign(z_grid[i,j,k-1+ind[0,i_z]],p_grid[i,j,k-1],q_grid[i,j,k-1+ind[1,i_z]],k,ind[:,i_z],[1,0,1])
 
                                                         x = x + 1
-
                                                     x = x - 1
 
                                             else :
@@ -3051,13 +1394,7 @@ def dx_correspondance(p_grid,q_grid,z_grid,data,x_step,r_step,theta_step,Rp,g0,h
                                                 z_1 = z_2
 
                                                 if Ord == True :
-                                                    order_init[0,i,j,x] = z_grid[i,j,k-1]
-                                                    order_init[1,i,j,x] = p_grid[i,j,k-1]
-                                                    order_init[2,i,j,x] = q_grid[i,j,k-1]
-                                                    order_init[3,i,j,x] = k-1
-                                                    order_init[4,i,j,x] = k-1
-                                                    order_init[5,i,j,x] = k-1
-
+                                                    order_init[:,i,j,x] = order_assign(z_grid[i,j,k-1],p_grid[i,j,k-1],q_grid[i,j,k-1],k,np.array([]),[0,0,0])
 
                                         else :
 
@@ -3106,15 +1443,9 @@ def dx_correspondance(p_grid,q_grid,z_grid,data,x_step,r_step,theta_step,Rp,g0,h
                                                         z_1 = z_ref[i_z]
 
                                                         if Ord == True :
-                                                            order_init[0,i,j,x] = z_grid[i,j,k-1]
-                                                            order_init[1,i,j,x] = p_grid[i,j,k-1+ind[0,i_z]]
-                                                            order_init[2,i,j,x] = q_grid[i,j,k-1+ind[1,i_z]]
-                                                            order_init[3,i,j,x] = k-1
-                                                            order_init[4,i,j,x] = k-1+ind[0,i_z]
-                                                            order_init[5,i,j,x] = k-1+ind[1,i_z]
+                                                            order_init[:,i,j,x] = order_assign(z_grid[i,j,k-1],p_grid[i,j,k-1+ind[0,i_z]],q_grid[i,j,k-1+ind[1,i_z]],k,ind[:,i_z],[0,1,1])
 
                                                         x = x + 1
-
                                                     x = x - 1
 
                                                 else :
@@ -3141,12 +1472,7 @@ def dx_correspondance(p_grid,q_grid,z_grid,data,x_step,r_step,theta_step,Rp,g0,h
                                                     z_1 = z_2
 
                                                     if Ord == True :
-                                                        order_init[0,i,j,x] = z_grid[i,j,k-1]
-                                                        order_init[1,i,j,x] = p_grid[i,j,k-1]
-                                                        order_init[2,i,j,x] = q_grid[i,j,k-1]
-                                                        order_init[3,i,j,x] = k-1
-                                                        order_init[4,i,j,x] = k-1
-                                                        order_init[5,i,j,x] = k-1
+                                                        order_init[:,i,j,x] = order_assign(z_grid[i,j,k-1],p_grid[i,j,k-1],q_grid[i,j,k-1],k,np.array([]),[0,0,0])
 
                                             else :
 
@@ -3175,12 +1501,7 @@ def dx_correspondance(p_grid,q_grid,z_grid,data,x_step,r_step,theta_step,Rp,g0,h
                                                 z_1 = z_2
 
                                                 if Ord == True :
-                                                    order_init[0,i,j,x] = z_grid[i,j,k-1]
-                                                    order_init[1,i,j,x] = p_grid[i,j,k-1]
-                                                    order_init[2,i,j,x] = q_grid[i,j,k-1]
-                                                    order_init[3,i,j,x] = k-1
-                                                    order_init[4,i,j,x] = k-1
-                                                    order_init[5,i,j,x] = k-1
+                                                    order_init[:,i,j,x] = order_assign(z_grid[i,j,k-1],p_grid[i,j,k-1],q_grid[i,j,k-1],k,np.array([]),[0,0,0])
 
                                     else :
 
@@ -3213,34 +1534,19 @@ def dx_correspondance(p_grid,q_grid,z_grid,data,x_step,r_step,theta_step,Rp,g0,h
 
                                         dx_init_opt[i,j,y] = L - x_ref[max]
                                         L -= dx_init_opt[i,j,y]
-                                        order_init[0,i,j,y] = z_grid[i,j,k-1+ind[0,0]]
-                                        order_init[1,i,j,y] = p_grid[i,j,k-1+ind[1,0]]
-                                        order_init[2,i,j,y] = q_grid[i,j,k-1+ind[2,0]]
-                                        order_init[3,i,j,y] = k-1+ind[0,0]
-                                        order_init[4,i,j,y] = k-1+ind[1,0]
-                                        order_init[5,i,j,y] = k-1+ind[2,0]
+                                        order_init[:,i,j,y] = order_assign(z_grid[i,j,k-1+ind[0,0]],p_grid[i,j,k-1+ind[1,0]],q_grid[i,j,k-1+ind[2,0]],k,ind[:,0],[1,1,1])
                                         y = y + 1
 
                                         dx_init_opt[i,j,y] = L - x_ref[mid]
                                         delta = L - x_ref[mid]
                                         L -= delta
-                                        order_init[0,i,j,y] = z_grid[i,j,k-1+ind[0,1]]
-                                        order_init[1,i,j,y] = p_grid[i,j,k-1+ind[1,1]]
-                                        order_init[2,i,j,y] = q_grid[i,j,k-1+ind[2,1]]
-                                        order_init[3,i,j,y] = k-1+ind[0,1]
-                                        order_init[4,i,j,y] = k-1+ind[1,1]
-                                        order_init[5,i,j,y] = k-1+ind[2,1]
+                                        order_init[:,i,j,y] = order_assign(z_grid[i,j,k-1+ind[0,1]],p_grid[i,j,k-1+ind[1,1]],q_grid[i,j,k-1+ind[2,1]],k,ind[:,1],[1,1,1])
                                         y = y + 1
 
                                         dx_init_opt[i,j,y] = L - x_ref[min]
                                         delta = L - x_ref[min]
                                         L -= delta
-                                        order_init[0,i,j,y] = z_grid[i,j,k-1+ind[0,2]]
-                                        order_init[1,i,j,y] = p_grid[i,j,k-1+ind[1,2]]
-                                        order_init[2,i,j,y] = q_grid[i,j,k-1+ind[2,2]]
-                                        order_init[3,i,j,y] = k-1+ind[0,2]
-                                        order_init[4,i,j,y] = k-1+ind[1,2]
-                                        order_init[5,i,j,y] = k-1+ind[2,2]
+                                        order_init[:,i,j,y] = order_assign(z_grid[i,j,k-1+ind[0,2]],p_grid[i,j,k-1+ind[1,2]],q_grid[i,j,k-1+ind[2,2]],k,ind[:,2],[1,1,1])
 
                                     else :
 
@@ -3258,23 +1564,13 @@ def dx_correspondance(p_grid,q_grid,z_grid,data,x_step,r_step,theta_step,Rp,g0,h
 
                                             dx_init_opt[i,j,y] = L - x_ref[max]
                                             L -= dx_init_opt[i,j,y]
-                                            order_init[0,i,j,y] = z_grid[i,j,k-1+ind[0,0]]
-                                            order_init[1,i,j,y] = p_grid[i,j,k-1]
-                                            order_init[2,i,j,y] = q_grid[i,j,k-1+ind[1,0]]
-                                            order_init[3,i,j,y] = k-1+ind[0,0]
-                                            order_init[4,i,j,y] = k-1
-                                            order_init[5,i,j,y] = k-1+ind[1,0]
+                                            order_init[:,i,j,y] = order_assign(z_grid[i,j,k-1+ind[0,0]],p_grid[i,j,k-1],q_grid[i,j,k-1+ind[1,0]],k,ind[:,0],[1,0,1])
                                             y = y + 1
 
                                             dx_init_opt[i,j,y] += L - x_ref[min]
                                             delta = L - x_ref[min]
                                             L -= delta
-                                            order_init[0,i,j,y] = z_grid[i,j,k-1+ind[0,1]]
-                                            order_init[1,i,j,y] = p_grid[i,j,k-1]
-                                            order_init[2,i,j,y] = q_grid[i,j,k-1+ind[1,1]]
-                                            order_init[3,i,j,y] = k-1+ind[0,1]
-                                            order_init[4,i,j,y] = k-1
-                                            order_init[5,i,j,y] = k-1+ind[1,1]
+                                            order_init[:,i,j,y] = order_assign(z_grid[i,j,k-1+ind[0,1]],p_grid[i,j,k-1],q_grid[i,j,k-1+ind[1,1]],k,ind[:,1],[1,0,1])
 
                                         else :
 
@@ -3292,23 +1588,13 @@ def dx_correspondance(p_grid,q_grid,z_grid,data,x_step,r_step,theta_step,Rp,g0,h
 
                                                 dx_init_opt[i,j,y] = L - x_ref[max]
                                                 L -= dx_init_opt[i,j,y]
-                                                order_init[0,i,j,y] = z_grid[i,j,k-1+ind[0,0]]
-                                                order_init[1,i,j,y] = p_grid[i,j,k-1+ind[1,0]]
-                                                order_init[2,i,j,y] = q_grid[i,j,k-1]
-                                                order_init[3,i,j,y] = k-1+ind[0,0]
-                                                order_init[4,i,j,y] = k-1+ind[1,0]
-                                                order_init[5,i,j,y] = k-1
+                                                order_init[:,i,j,y] = order_assign(z_grid[i,j,k-1+ind[0,0]],p_grid[i,j,k-1+ind[1,0]],q_grid[i,j,k-1],k,ind[:,0],[1,1,0])
                                                 y = y + 1
 
                                                 dx_init_opt[i,j,y] += L - x_ref[min]
                                                 delta = L - x_ref[min]
                                                 L -= delta
-                                                order_init[0,i,j,y] = z_grid[i,j,k-1+ind[0,1]]
-                                                order_init[1,i,j,y] = p_grid[i,j,k-1+ind[1,1]]
-                                                order_init[2,i,j,y] = q_grid[i,j,k-1]
-                                                order_init[3,i,j,y] = k-1+ind[0,1]
-                                                order_init[4,i,j,y] = k-1+ind[1,1]
-                                                order_init[5,i,j,y] = k-1
+                                                order_init[:,i,j,y] = order_assign(z_grid[i,j,k-1+ind[0,1]],p_grid[i,j,k-1+ind[1,1]],q_grid[i,j,k-1],k,ind[:,1],[1,1,0])
 
                                             else :
 
@@ -3316,12 +1602,7 @@ def dx_correspondance(p_grid,q_grid,z_grid,data,x_step,r_step,theta_step,Rp,g0,h
 
                                                 dx_init_opt[i,j,y] = L - x_pre
                                                 L -= dx_init_opt[i,j,y]
-                                                order_init[0,i,j,y] = z_grid[i,j,k-1]
-                                                order_init[1,i,j,y] = p_grid[i,j,k-1]
-                                                order_init[2,i,j,y] = q_grid[i,j,k-1]
-                                                order_init[3,i,j,y] = k-1
-                                                order_init[4,i,j,y] = k-1
-                                                order_init[5,i,j,y] = k-1
+                                                order_init[:,i,j,y] = order_assign(z_grid[i,j,k-1],p_grid[i,j,k-1],q_grid[i,j,k-1],k,np.array([]),[0,0,0])
 
                                 else :
 
@@ -3339,24 +1620,13 @@ def dx_correspondance(p_grid,q_grid,z_grid,data,x_step,r_step,theta_step,Rp,g0,h
 
                                         dx_init_opt[i,j,y] = L - x_ref[max]
                                         L -= dx_init_opt[i,j,y]
-                                        order_init[0,i,j,y] = z_grid[i,j,k-1]
-                                        order_init[1,i,j,y] = p_grid[i,j,k-1+ind[0,0]]
-                                        order_init[2,i,j,y] = q_grid[i,j,k-1+ind[1,0]]
-                                        order_init[3,i,j,y] = k-1
-                                        order_init[4,i,j,y] = k-1+ind[0,0]
-                                        order_init[5,i,j,y] = k-1+ind[1,0]
-
+                                        order_init[:,i,j,y] = order_assign(z_grid[i,j,k-1],p_grid[i,j,k-1+ind[0,0]],q_grid[i,j,k-1+ind[1,0]],k,ind[:,0],[0,1,1])
                                         y = y + 1
 
                                         dx_init_opt[i,j,y] += L - x_ref[min]
                                         delta = L - x_ref[min]
                                         L -= delta
-                                        order_init[0,i,j,y] = z_grid[i,j,k-1]
-                                        order_init[1,i,j,y] = p_grid[i,j,k-1+ind[0,1]]
-                                        order_init[2,i,j,y] = q_grid[i,j,k-1+ind[1,1]]
-                                        order_init[3,i,j,y] = k-1
-                                        order_init[4,i,j,y] = k-1+ind[0,1]
-                                        order_init[5,i,j,y] = k-1+ind[1,1]
+                                        order_init[:,i,j,y] = order_assign(z_grid[i,j,k-1],p_grid[i,j,k-1+ind[0,1]],q_grid[i,j,k-1+ind[1,1]],k,ind[:,1],[0,1,1])
 
                                     else :
 
@@ -3366,12 +1636,7 @@ def dx_correspondance(p_grid,q_grid,z_grid,data,x_step,r_step,theta_step,Rp,g0,h
 
                                             dx_init_opt[i,j,y] = L - x_pre
                                             L -= dx_init_opt[i,j,y]
-                                            order_init[0,i,j,y] = z_grid[i,j,k-1]
-                                            order_init[1,i,j,y] = p_grid[i,j,k-1]
-                                            order_init[2,i,j,y] = q_grid[i,j,k-1]
-                                            order_init[3,i,j,y] = k-1
-                                            order_init[4,i,j,y] = k-1
-                                            order_init[5,i,j,y] = k-1
+                                            order_init[:,i,j,y] = order_assign(z_grid[i,j,k-1],p_grid[i,j,k-1],q_grid[i,j,k-1],k,np.array([]),[0,0,0])
 
                                         else :
 
@@ -3381,12 +1646,7 @@ def dx_correspondance(p_grid,q_grid,z_grid,data,x_step,r_step,theta_step,Rp,g0,h
 
                                                 dx_init_opt[i,j,y] = L - x_pre
                                                 L -= dx_init_opt[i,j,y]
-                                                order_init[0,i,j,y] = z_grid[i,j,k-1]
-                                                order_init[1,i,j,y] = p_grid[i,j,k-1]
-                                                order_init[2,i,j,y] = q_grid[i,j,k-1]
-                                                order_init[3,i,j,y] = k-1
-                                                order_init[4,i,j,y] = k-1
-                                                order_init[5,i,j,y] = k-1
+                                                order_init[:,i,j,y] = order_assign(z_grid[i,j,k-1],p_grid[i,j,k-1],q_grid[i,j,k-1],k,np.array([]),[0,0,0])
 
                             else :
                                 # Lorsque le rayon a passe le terminateur, le premier changement de cellule permet de
@@ -3398,35 +1658,17 @@ def dx_correspondance(p_grid,q_grid,z_grid,data,x_step,r_step,theta_step,Rp,g0,h
                                     if p_grid[i,j,k] != p_grid[i,j,k-1] or q_grid[i,j,k] != q_grid[i,j,k-1] or z_grid[i,j,k] != z_grid[i,j,k-1] :
 
                                         dx_init_opt[i,j,y] = L - x_step/2.
-                                        order_init[0,i,j,y] = z_grid[i,j,k-1]
-                                        order_init[1,i,j,y] = p_grid[i,j,k-1]
-                                        order_init[2,i,j,y] = q_grid[i,j,k-1]
-                                        order_init[3,i,j,y] = k-1
-                                        order_init[4,i,j,y] = k-1
-                                        order_init[5,i,j,y] = k-1
-
+                                        order_init[:,i,j,y] = order_assign(z_grid[i,j,k-1],p_grid[i,j,k-1],q_grid[i,j,k-1],k,np.array([]),[0,0,0])
                                         y = y + 1
 
                                         dx_init_opt[i,j,y] = x_step/2.
                                         dx_init[i,j,y] = 1
-                                        order_init[0,i,j,y] = z_grid[i,j,k]
-                                        order_init[1,i,j,y] = p_grid[i,j,k]
-                                        order_init[2,i,j,y] = q_grid[i,j,k]
-                                        order_init[3,i,j,y] = k
-                                        order_init[4,i,j,y] = k
-                                        order_init[5,i,j,y] = k
-
+                                        order_init[:,i,j,y] = order_assign(z_grid[i,j,k],p_grid[i,j,k],q_grid[i,j,k],k+1,np.array([]),[0,0,0])
                                         y = y + 1
 
                                         dx_init_opt[i,j,y] = x_step/2.
                                         dx_init[i,j,y] = 1
-                                        order_init[0,i,j,y] = z_grid[i,j,k]
-                                        order_init[1,i,j,y] = p_grid[i,j,k]
-                                        order_init[2,i,j,y] = q_grid[i,j,k]
-                                        order_init[3,i,j,y] = k
-                                        order_init[4,i,j,y] = k
-                                        order_init[5,i,j,y] = k
-
+                                        order_init[:,i,j,y] = order_assign(z_grid[i,j,k],p_grid[i,j,k],q_grid[i,j,k],k+1,np.array([]),[0,0,0])
                                         mid_y = 1
 
                                         if p_grid[i,j,k] != p_grid[i,j,k+1] or q_grid[i,j,k] != q_grid[i,j,k+1] or z_grid[i,j,k] != z_grid[i,j,k+1] :
@@ -3438,13 +1680,7 @@ def dx_correspondance(p_grid,q_grid,z_grid,data,x_step,r_step,theta_step,Rp,g0,h
                                         # Au premier passage, le x_pre n'est que la moitie du parcours dans la cellule du
                                         # terminateur, donc on double x_pre
                                         dx_init_opt[i,j,y] = L
-                                        order_init[0,i,j,y] = z_grid[i,j,k-1]
-                                        order_init[1,i,j,y] = p_grid[i,j,k-1]
-                                        order_init[2,i,j,y] = q_grid[i,j,k-1]
-                                        order_init[3,i,j,y] = k-1
-                                        order_init[4,i,j,y] = k-1
-                                        order_init[5,i,j,y] = k-1
-
+                                        order_init[:,i,j,y] = order_assign(z_grid[i,j,k-1],p_grid[i,j,k-1],q_grid[i,j,k-1],k,np.array([]),[0,0,0])
                                         mid_y = 1
 
                                         if p_grid[i,j,k] != p_grid[i,j,k+1] or q_grid[i,j,k] != q_grid[i,j,k+1] or z_grid[i,j,k] != z_grid[i,j,k+1] :
@@ -3493,32 +1729,17 @@ def dx_correspondance(p_grid,q_grid,z_grid,data,x_step,r_step,theta_step,Rp,g0,h
 
                                                 dx_init_opt[i,j,y] = x_ref[min] - ex
                                                 ex = x_ref[min]
-                                                order_init[0,i,j,y] = z_grid[i,j,k-1+ind[0,0]]
-                                                order_init[1,i,j,y] = p_grid[i,j,k-1+ind[1,0]]
-                                                order_init[2,i,j,y] = q_grid[i,j,k-1+ind[2,0]]
-                                                order_init[3,i,j,y] = k-1+ind[0,0]
-                                                order_init[4,i,j,y] = k-1+ind[1,0]
-                                                order_init[5,i,j,y] = k-1+ind[2,0]
+                                                order_init[:,i,j,y] = order_assign(z_grid[i,j,k-1+ind[0,0]],p_grid[i,j,k-1+ind[1,0]],q_grid[i,j,k-1+ind[2,0]],k,ind[:,0],[1,1,1])
                                                 y = y + 1
 
                                                 dx_init_opt[i,j,y] += x_ref[mid] - ex
                                                 ex = x_ref[mid]
-                                                order_init[0,i,j,y] = z_grid[i,j,k-1+ind[0,1]]
-                                                order_init[1,i,j,y] = p_grid[i,j,k-1+ind[1,1]]
-                                                order_init[2,i,j,y] = q_grid[i,j,k-1+ind[2,1]]
-                                                order_init[3,i,j,y] = k-1+ind[0,1]
-                                                order_init[4,i,j,y] = k-1+ind[1,1]
-                                                order_init[5,i,j,y] = k-1+ind[2,1]
+                                                order_init[:,i,j,y] = order_assign(z_grid[i,j,k-1+ind[0,1]],p_grid[i,j,k-1+ind[1,1]],q_grid[i,j,k-1+ind[2,1]],k,ind[:,1],[1,1,1])
                                                 y = y + 1
 
                                                 dx_init_opt[i,j,y] += x_ref[max] - ex
                                                 ex = x_ref[max]
-                                                order_init[0,i,j,y] = z_grid[i,j,k-1+ind[0,2]]
-                                                order_init[1,i,j,y] = p_grid[i,j,k-1+ind[1,2]]
-                                                order_init[2,i,j,y] = q_grid[i,j,k-1+ind[2,2]]
-                                                order_init[3,i,j,y] = k-1+ind[0,2]
-                                                order_init[4,i,j,y] = k-1+ind[1,2]
-                                                order_init[5,i,j,y] = k-1+ind[2,2]
+                                                order_init[:,i,j,y] = order_assign(z_grid[i,j,k-1+ind[0,2]],p_grid[i,j,k-1+ind[1,2]],q_grid[i,j,k-1+ind[2,2]],k,ind[:,2],[1,1,1])
 
                                             else :
 
@@ -3536,22 +1757,12 @@ def dx_correspondance(p_grid,q_grid,z_grid,data,x_step,r_step,theta_step,Rp,g0,h
 
                                                     dx_init_opt[i,j,y] = x_ref[min] - ex
                                                     ex = x_ref[min]
-                                                    order_init[0,i,j,y] = z_grid[i,j,k-1+ind[0,0]]
-                                                    order_init[1,i,j,y] = p_grid[i,j,k-1]
-                                                    order_init[2,i,j,y] = q_grid[i,j,k-1+ind[1,0]]
-                                                    order_init[3,i,j,y] = k-1+ind[0,0]
-                                                    order_init[4,i,j,y] = k-1
-                                                    order_init[5,i,j,y] = k-1+ind[1,0]
+                                                    order_init[:,i,j,y] = order_assign(z_grid[i,j,k-1+ind[0,0]],p_grid[i,j,k-1],q_grid[i,j,k-1+ind[1,0]],k,ind[:,0],[1,0,1])
                                                     y = y + 1
 
                                                     dx_init_opt[i,j,y] += x_ref[max] - ex
                                                     ex = x_ref[max]
-                                                    order_init[0,i,j,y] = z_grid[i,j,k-1+ind[0,1]]
-                                                    order_init[1,i,j,y] = p_grid[i,j,k-1]
-                                                    order_init[2,i,j,y] = q_grid[i,j,k-1+ind[1,1]]
-                                                    order_init[3,i,j,y] = k-1+ind[0,1]
-                                                    order_init[4,i,j,y] = k-1
-                                                    order_init[5,i,j,y] = k-1+ind[1,1]
+                                                    order_init[:,i,j,y] = order_assign(z_grid[i,j,k-1+ind[0,1]],p_grid[i,j,k-1],q_grid[i,j,k-1+ind[1,1]],k,ind[:,1],[1,0,1])
 
                                                 else :
 
@@ -3567,22 +1778,12 @@ def dx_correspondance(p_grid,q_grid,z_grid,data,x_step,r_step,theta_step,Rp,g0,h
 
                                                     dx_init_opt[i,j,y] = x_ref[min] - ex
                                                     ex = x_ref[min]
-                                                    order_init[0,i,j,y] = z_grid[i,j,k-1+ind[0,0]]
-                                                    order_init[1,i,j,y] = p_grid[i,j,k-1+ind[1,0]]
-                                                    order_init[2,i,j,y] = q_grid[i,j,k-1]
-                                                    order_init[3,i,j,y] = k-1+ind[0,0]
-                                                    order_init[4,i,j,y] = k-1+ind[1,0]
-                                                    order_init[5,i,j,y] = k-1
+                                                    order_init[:,i,j,y] = order_assign(z_grid[i,j,k-1+ind[0,0]],p_grid[i,j,k-1+ind[1,0]],q_grid[i,j,k-1],k,ind[:,0],[1,1,0])
                                                     y = y + 1
 
                                                     dx_init_opt[i,j,y] += x_ref[max] - ex
                                                     ex = x_ref[max]
-                                                    order_init[0,i,j,y] = z_grid[i,j,k-1+ind[0,1]]
-                                                    order_init[1,i,j,y] = p_grid[i,j,k-1+ind[1,1]]
-                                                    order_init[2,i,j,y] = q_grid[i,j,k-1]
-                                                    order_init[3,i,j,y] = k-1+ind[0,1]
-                                                    order_init[4,i,j,y] = k-1+ind[1,1]
-                                                    order_init[5,i,j,y] = k-1
+                                                    order_init[:,i,j,y] = order_assign(z_grid[i,j,k-1+ind[0,1]],p_grid[i,j,k-1+ind[1,1]],q_grid[i,j,k-1],k,ind[:,1],[1,1,0])
 
                                         else :
 
@@ -3590,12 +1791,7 @@ def dx_correspondance(p_grid,q_grid,z_grid,data,x_step,r_step,theta_step,Rp,g0,h
 
                                             dx_init_opt[i,j,y] = x_pre - ex
                                             ex = x_pre
-                                            order_init[0,i,j,y] = z_grid[i,j,k-1]
-                                            order_init[1,i,j,y] = p_grid[i,j,k-1]
-                                            order_init[2,i,j,y] = q_grid[i,j,k-1]
-                                            order_init[3,i,j,y] = k-1
-                                            order_init[4,i,j,y] = k-1
-                                            order_init[5,i,j,y] = k-1
+                                            order_init[:,i,j,y] = order_assign(z_grid[i,j,k-1],p_grid[i,j,k-1],q_grid[i,j,k-1],k,np.array([]),[0,0,0])
 
                                     else :
 
@@ -3615,22 +1811,12 @@ def dx_correspondance(p_grid,q_grid,z_grid,data,x_step,r_step,theta_step,Rp,g0,h
 
                                                 dx_init_opt[i,j,y] = x_ref[min] - ex
                                                 ex = x_ref[min]
-                                                order_init[0,i,j,y] = z_grid[i,j,k-1]
-                                                order_init[1,i,j,y] = p_grid[i,j,k-1+ind[0,0]]
-                                                order_init[2,i,j,y] = q_grid[i,j,k-1+ind[1,0]]
-                                                order_init[3,i,j,y] = k-1
-                                                order_init[4,i,j,y] = k-1+ind[0,0]
-                                                order_init[5,i,j,y] = k-1+ind[1,0]
+                                                order_init[:,i,j,y] = order_assign(z_grid[i,j,k-1],p_grid[i,j,k-1+ind[0,0]],q_grid[i,j,k-1+ind[1,0]],k,ind[:,0],[0,1,1])
                                                 y = y + 1
 
                                                 dx_init_opt[i,j,y] += x_ref[max] - ex
                                                 ex = x_ref[max]
-                                                order_init[0,i,j,y] = z_grid[i,j,k-1]
-                                                order_init[1,i,j,y] = p_grid[i,j,k-1+ind[0,1]]
-                                                order_init[2,i,j,y] = q_grid[i,j,k-1+ind[1,1]]
-                                                order_init[3,i,j,y] = k-1
-                                                order_init[4,i,j,y] = k-1+ind[0,1]
-                                                order_init[5,i,j,y] = k-1+ind[1,1]
+                                                order_init[:,i,j,y] = order_assign(z_grid[i,j,k-1],p_grid[i,j,k-1+ind[0,1]],q_grid[i,j,k-1+ind[1,1]],k,ind[:,1],[0,1,1])
 
                                             else :
 
@@ -3640,12 +1826,7 @@ def dx_correspondance(p_grid,q_grid,z_grid,data,x_step,r_step,theta_step,Rp,g0,h
 
                                                     dx_init_opt[i,j,y] = x_pre - ex
                                                     ex = x_pre
-                                                    order_init[0,i,j,y] = z_grid[i,j,k-1]
-                                                    order_init[1,i,j,y] = p_grid[i,j,k-1]
-                                                    order_init[2,i,j,y] = q_grid[i,j,k-1]
-                                                    order_init[3,i,j,y] = k-1
-                                                    order_init[4,i,j,y] = k-1
-                                                    order_init[5,i,j,y] = k-1
+                                                    order_init[:,i,j,y] = order_assign(z_grid[i,j,k-1],p_grid[i,j,k-1],q_grid[i,j,k-1],k,np.array([]),[0,0,0])
 
                                                 else :
 
@@ -3653,12 +1834,7 @@ def dx_correspondance(p_grid,q_grid,z_grid,data,x_step,r_step,theta_step,Rp,g0,h
 
                                                     dx_init_opt[i,j,y] = x_pre - ex
                                                     ex = x_pre
-                                                    order_init[0,i,j,y] = z_grid[i,j,k-1]
-                                                    order_init[1,i,j,y] = p_grid[i,j,k-1]
-                                                    order_init[2,i,j,y] = q_grid[i,j,k-1]
-                                                    order_init[3,i,j,y] = k-1
-                                                    order_init[4,i,j,y] = k-1
-                                                    order_init[5,i,j,y] = k-1
+                                                    order_init[:,i,j,y] = order_assign(z_grid[i,j,k-1],p_grid[i,j,k-1],q_grid[i,j,k-1],k,np.array([]),[0,0,0])
 
                         y = y + 1
                         x = x + 1
@@ -3700,12 +1876,7 @@ def dx_correspondance(p_grid,q_grid,z_grid,data,x_step,r_step,theta_step,Rp,g0,h
                                 pdx_init[i,j,x] = integ[0]
 
                             if Ord == True :
-                                order_init[0,i,j,x] = z_grid[i,j,k]
-                                order_init[1,i,j,x] = p_grid[i,j,k]
-                                order_init[2,i,j,x] = q_grid[i,j,k]
-                                order_init[3,i,j,x] = k
-                                order_init[4,i,j,x] = k
-                                order_init[5,i,j,x] = k
+                                order_init[:,i,j,x] = order_assign(z_grid[i,j,k],p_grid[i,j,k],q_grid[i,j,k],k+1,np.array([]),[0,0,0])
 
                             #print(mess,i,j,k,z_1,z_2,integ[0])
 
@@ -3714,12 +1885,7 @@ def dx_correspondance(p_grid,q_grid,z_grid,data,x_step,r_step,theta_step,Rp,g0,h
                             L = np.sqrt((Rp+h)**2 - (Rp+r)**2)
 
                             dx_init_opt[i,j,y] = L - ex
-                            order_init[0,i,j,y] = z_grid[i,j,k]
-                            order_init[1,i,j,y] = p_grid[i,j,k]
-                            order_init[2,i,j,y] = q_grid[i,j,k]
-                            order_init[3,i,j,y] = k
-                            order_init[4,i,j,y] = k
-                            order_init[5,i,j,y] = k
+                            order_init[:,i,j,y] = order_assign(z_grid[i,j,k],p_grid[i,j,k],q_grid[i,j,k],k+1,np.array([]),[0,0,0])
 
                         # Si le dernier point appartient a la meme cellule que le precedent, nous n'avons pas encore calcule
                         # la distance parcourue dans cette cellule, elle est donc egale a Lmax moins le x_pre calcule
@@ -3728,7 +1894,6 @@ def dx_correspondance(p_grid,q_grid,z_grid,data,x_step,r_step,theta_step,Rp,g0,h
                     else :
 
                         fin = int(k)
-
                         dx_init[i,j,x] = fin - deb + 1
 
                         if Integral == True :
@@ -3755,12 +1920,7 @@ def dx_correspondance(p_grid,q_grid,z_grid,data,x_step,r_step,theta_step,Rp,g0,h
                                 pdx_init[i,j,x] += integ[0]
 
                             if Ord == True :
-                                order_init[0,i,j,x] = z_grid[i,j,k]
-                                order_init[1,i,j,x] = p_grid[i,j,k]
-                                order_init[2,i,j,x] = q_grid[i,j,k]
-                                order_init[3,i,j,x] = k
-                                order_init[4,i,j,x] = k
-                                order_init[5,i,j,x] = k
+                                order_init[:,i,j,x] = order_assign(z_grid[i,j,k],p_grid[i,j,k],q_grid[i,j,k],k+1,np.array([]),[0,0,0])
 
                             mess += 'end'
 
@@ -3774,13 +1934,7 @@ def dx_correspondance(p_grid,q_grid,z_grid,data,x_step,r_step,theta_step,Rp,g0,h
                                 dx_init_opt[i,j,y] = L - ex
                             else :
                                 dx_init_opt[i,j,y] = L
-                            order_init[0,i,j,y] = z_grid[i,j,k]
-                            order_init[1,i,j,y] = p_grid[i,j,k]
-                            order_init[2,i,j,y] = q_grid[i,j,k]
-                            order_init[3,i,j,y] = k
-                            order_init[4,i,j,y] = k
-                            order_init[5,i,j,y] = k
-
+                            order_init[:,i,j,y] = order_assign(z_grid[i,j,k],p_grid[i,j,k],q_grid[i,j,k],k+1,np.array([]),[0,0,0])
 
             # len_ref permet de redimensionner les tableaux
 
@@ -3790,8 +1944,8 @@ def dx_correspondance(p_grid,q_grid,z_grid,data,x_step,r_step,theta_step,Rp,g0,h
 
                 len_ref = len
 
-            if rank == 0 : 
-	        bar.animate(i*theta_size+j)
+            if rank == 0 :
+                bar.animate(i*theta_size+j)
 
     dx_grid = dx_init[:,:,0:len_ref]
     order_grid = order_init[:,:,:,0:len_ref]
@@ -3825,22 +1979,21 @@ def dx_correspondance(p_grid,q_grid,z_grid,data,x_step,r_step,theta_step,Rp,g0,h
 ########################################################################################################################
 
 
-def altitude_line_array2D_cyl_optimized_correspondance (r_line,theta_line,dx_grid,order_grid,Rp,h,P,T,h2o_vap,\
-                                    r_step,x_step,lim_alt,Marker=False,Clouds=False,Cut=False) :
+def altitude_line_array2D_cyl_optimized_correspondance (r_line,theta_line,dx_grid,order_grid,Rp,h,P,T,Q_vap,\
+                                    r_step,x_step,lim_alt,Tracer=False,Clouds=False,Cut=False) :
 
     zone, = np.where(order_grid >= 0)
 
     D = np.nansum(dx_grid[zone])
 
-    if Marker == True :
-        h2o_vap_ref = np.zeros(zone.size)
+    if Tracer == True :
+        Q_vap_ref = np.zeros(zone.size)
 
     T_ref = T[r_line,theta_line,order_grid[zone]]
     P_ref = P[r_line,theta_line,order_grid[zone]]
-    d_ref = 2*np.sqrt((Rp + lim_alt*1000.)**2 - (Rp+r_line*r_step)**2)
 
-    if Marker == True :
-        h2o_vap_ref =h2o_vap[r_line,theta_line,order_grid[zone]]
+    if Tracer == True :
+        Q_vap_ref =Q_vap[r_line,theta_line,order_grid[zone]]
 
     dx_ref = dx_grid[zone]
 
@@ -3857,9 +2010,9 @@ def altitude_line_array2D_cyl_optimized_correspondance (r_line,theta_line,dx_gri
 
     # Pinter est en Pa, tandis que Cn_mol_inter est deja converti en densite moleculaire (m^-3)
 
-    if Marker == True :
+    if Tracer == True :
 
-        return zone,l,dx_ref,Cn_mol_ref,T_ref,P_ref,h2o_vap_ref
+        return zone,l,dx_ref,Cn_mol_ref,T_ref,P_ref,Q_vap_ref
 
     else :
 
@@ -3870,8 +2023,7 @@ def altitude_line_array2D_cyl_optimized_correspondance (r_line,theta_line,dx_gri
 
 
 def altitude_line_array1D_cyl_optimized_correspondance (r_line,theta_line,dx_grid,alt_grid,order_grid,Rp,h,P_col,T_col,\
-
-                                h2o_vap_col,r_step,x_step,lim_alt,Marker=False) :
+                                Q_vap_col,r_step,x_step,lim_alt,Tracer=False) :
 
     zone, = np.where(dx_grid >= 0)
 
@@ -3880,8 +2032,8 @@ def altitude_line_array1D_cyl_optimized_correspondance (r_line,theta_line,dx_gri
     T_ref = T_col[alt_grid[order_grid[zone]]]
     P_ref = P_col[alt_grid[order_grid[zone]]]
 
-    if Marker == True :
-        h2o_vap_ref = h2o_vap_col[alt_grid[order_grid[zone]]]
+    if Tracer == True :
+        Q_vap_ref = Q_vap_col[alt_grid[order_grid[zone]]]
 
     dx_ref = dx_grid[zone]
 
@@ -3900,9 +2052,9 @@ def altitude_line_array1D_cyl_optimized_correspondance (r_line,theta_line,dx_gri
 
     # Pinter est en Pa, tandis que Cn_mol_inter est deja converti en densite moleculaire (m^-3)
 
-    if Marker == True :
+    if Tracer == True :
 
-        return zone,l,dx_ref,Cn_mol_ref,T_ref,P_ref,h2o_vap_ref
+        return zone,l,dx_ref,Cn_mol_ref,T_ref,P_ref,Q_vap_ref
 
     else :
 
@@ -3925,7 +2077,7 @@ def altitude_line_array1D_cyl_optimized_correspondance (r_line,theta_line,dx_gri
 ########################################################################################################################
 ########################################################################################################################
 
-def atmospheric_matrix_3D(order,data,t,Rp,c_species,rank,Marker=False,Clouds=False,Composition=False) :
+def atmospheric_matrix_3D(order,data,t,Rp,c_species,rank,Tracer=False,Clouds=False,Composition=False) :
 
     sp,reso_t,reso_z,reso_lat,reso_long = np.shape(data)
     T_file = data[1,:,:,:,:]
@@ -3933,43 +2085,33 @@ def atmospheric_matrix_3D(order,data,t,Rp,c_species,rank,Marker=False,Clouds=Fal
     c_number = c_species.size
 
     if Clouds == True :
-
-        if Marker == True :
-
-            h2o_vap = data[2,:,:,:,:]
+        if Tracer == True :
+            Q_vap = data[2,:,:,:,:]
             gen_cond = data[3:3+c_number,:,:,:,:]
             num = 3+c_number
-
         else :
-
             gen_cond = data[2:2+c_number,:,:,:,:]
             num = 2+c_number
-
     else :
-
-        if Marker == True :
-
-            h2o_vap = data[2,:,:,:,:]
+        if Tracer == True :
+            Q_vap = data[2,:,:,:,:]
             num = 3
-
         else :
-
             num = 2
 
 
-    if Composition == True :
+    composit = data[num : sp,:,:,:,:]
 
-        composit = data[num : sp,:,:,:,:]
+    shape = np.shape(order)
     
     del data
 
-    shape = np.shape(order)
     T = np.zeros((shape[1],shape[2],shape[3]),dtype=np.float64)
     P = np.zeros((shape[1],shape[2],shape[3]),dtype=np.float64)
     Cn = np.zeros((shape[1],shape[2],shape[3]),dtype=np.float64)
 
-    if Marker == True :
-        Xm_h2o = np.zeros((shape[1],shape[2],shape[3]),dtype=np.float64)
+    if Tracer == True :
+        Xm_Q = np.zeros((shape[1],shape[2],shape[3]),dtype=np.float64)
 
     if Clouds == True :
 
@@ -3992,285 +2134,78 @@ def atmospheric_matrix_3D(order,data,t,Rp,c_species,rank,Marker=False,Clouds=Fal
             P[i,j,wh] = P_file[t,order[0,i,j,wh],order[1,i,j,wh],order[2,i,j,wh]]
             Cn[i,j,wh] = P[i,j,wh]/(R_gp*T[i,j,wh])*N_A
 
-            if Marker == True :
-
-                Xm_h2o[i,j,wh] = h2o_vap[t,order[0,i,j,wh],order[1,i,j,wh],order[2,i,j,wh]]
+            if Tracer == True :
+                Xm_Q[i,j,wh] = Q_vap[t,order[0,i,j,wh],order[1,i,j,wh],order[2,i,j,wh]]
 
             if Clouds == True :
-
                 gen[:,i,j,wh] = gen_cond[:,t,order[0,i,j,wh],order[1,i,j,wh],order[2,i,j,wh]]
 
-            if Composition == True :
-
-                compo[:,i,j,wh] = composit[:,t,order[0,i,j,wh],order[1,i,j,wh],order[2,i,j,wh]]
+            compo[:,i,j,wh] = composit[:,t,order[0,i,j,wh],order[1,i,j,wh],order[2,i,j,wh]]
 
             if rank == 0 : 
-	        bar.animate(i*shape[2] + j)
+                bar.animate(i*shape[2] + j)
 
-    if Marker == True :
-
+    if Tracer == True :
         if Clouds == False :
-
-            if Composition == True :
-
-                return P,T,Cn,Xm_h2o,compo
-
-            else :
-
-                return P,T,Cn,Xm_h2o
-
+            return P,T,Xm_Q,Cn,compo
         else :
-
-            if Composition == True :
-
-                return P,T,Cn,Xm_h2o,gen,compo
-
-            else :
-
-                return P,T,Cn,Xm_h2o,gen
-
+            return P,T,Xm_Q,Cn,gen,compo
     else :
-
         if Clouds == False :
-
-            if Composition == True :
-
-                return P,T,Cn,compo
-
-            else :
-
-                return P,T,Cn
-
+            return P,T,Cn,compo
         else :
+            return P,T,Cn,gen,compo
 
-            if Composition == True :
-
-                return P,T,Cn,gen,compo
-
-            else :
-
-                return P,T,Cn,gen
 
 
 ########################################################################################################################
 
 
-def atmospheric_matrix_init(p_grid,q_grid,z_grid,data,t,Rp,c_species,Marker=False,Clouds=False,Composition=False) :
-
-    sp,reso_t,reso_z,reso_lat,reso_long = np.shape(data)
-    T_file = data[1,:,:,:,:]
-    P_file = data[0,:,:,:,:]
-    c_number = c_species.size
-
-    if Clouds == True :
-
-        if Marker == True :
-
-            h2o_vap = data[2,:,:,:,:]
-            gen_cond = data[3:3+c_number,:,:,:,:]
-            num = 3+c_number
-
-        else :
-
-            gen_cond = data[2:2+c_number,:,:,:,:]
-            num = 2+c_number
-
-    else :
-
-        if Marker == True :
-
-            h2o_vap = data[2,:,:,:,:]
-            num = 3
-
-        else :
-
-            num = 2
-
-
-    if Composition == True :
-
-        composit = data[num : sp,:,:,:,:]
-
-    shape = np.shape(p_grid)
-    T = np.zeros(shape)
-    P = np.zeros(shape)
-    Cn = np.zeros(shape)
-
-    if Marker == True :
-        Xm_h2o = np.zeros(shape)
-
-    if Clouds == True :
-
-        gen = np.zeros((c_number,shape[0],shape[1],shape[2]))
-
-    if Composition == True :
-
-        compo = np.zeros((sp-num,shape[0],shape[1],shape[2]))
-
-    bar = ProgressBar(shape[0],'Parametric recording')
-
-    for i in range(shape[0]) :
-
-        for j in range(shape[1]) :
-
-            p_ref = -2
-            q_ref = -2
-            z_ref = -2
-
-            for k in range(shape[2]) :
-
-                p = p_grid[i,j,k]
-
-                if p >= 0 :
-
-                    q = q_grid[i,j,k]
-                    z = z_grid[i,j,k]
-
-                    if p == p_ref and q == q_ref and z == z_ref :
-
-                        T[i,j,k] = T[i,j,k-1]
-                        P[i,j,k] = P[i,j,k-1]
-                        Cn[i,j,k] = Cn[i,j,k-1]
-
-                        if Marker ==True :
-                            Xm_h2o[i,j,k] = Xm_h2o[i,j,k-1]
-
-                        if Clouds == True :
-                            gen[:,i,j,k] = gen[:,i,j,k-1]
-
-                        if Composition == True :
-                            compo[:,i,j,k] = compo[:,i,j,k-1]
-
-                    else :
-
-                        if q < reso_long/2 :
-                            qq = reso_long/2 + q
-                        else :
-                            qq = q - reso_long/2
-
-                        pp = reso_lat - 1 - p
-
-                        T[i,j,k] = T_file[t,z,pp,qq]
-                        P[i,j,k] = P_file[t,z,pp,qq]
-                        Cn[i,j,k] = P_file[t,z,pp,qq]/(R_gp*T_file[t,z,pp,qq])*N_A
-
-                        if Marker == True :
-
-                            Xm_h2o[i,j,k] = h2o_vap[t,z,pp,qq]
-
-                        if Clouds == True :
-
-                            gen[:,i,j,k] = gen_cond[:,t,z,pp,qq]
-
-                        if Composition == True :
-
-                            compo[:,i,j,k] = composit[:,t,z,pp,qq]
-
-                        p_ref, q_ref, z_ref = p, q, z
-            bar.animate(i + 1)
-
-
-    if Marker == True :
-
-        if Clouds == False :
-
-            if Composition == True :
-
-                return P,T,Xm_h2o,Cn,compo
-
-            else :
-
-                return P,T,Xm_h2o,Cn
-
-        else :
-
-            if Composition == True :
-
-                return P,T,Xm_h2o,Cn,gen,compo
-
-            else :
-
-                return P,T,Xm_h2o,Cn,gen
-
-    else :
-
-        if Clouds == False :
-
-            if Composition == True :
-
-                return P,T,Cn,compo
-
-            else :
-
-                return P,T,Cn
-
-        else :
-
-            if Composition == True :
-
-                return P,T,Cn,gen,compo
-
-            else :
-
-                return P,T,Cn,gen
-
-
-########################################################################################################################
-
-
-def atmospheric_matrix_1D(z_file,P_col,T_col,h2o_col) :
+def atmospheric_matrix_1D(z_file,P_col,T_col,Q_col) :
 
     z_grid = np.load("%s.npy"%(z_file))
 
     shape = np.shape(z_grid)
-    T = np.zeros(shape)
-    P = np.zeros(shape)
-    Xm_h2o = np.zeros(shape)
-    Cn = np.zeros(shape)
+    T = np.zeros(shape,dtype=np.float64)
+    P = np.zeros(shape,dtype=np.float64)
+    Xm_Q = np.zeros(shape,dtype=np.float64)
+    Cn = np.zeros(shape,dtype=np.float64)
 
     j = 0
 
     for i in range(shape[0]) :
-
         z_ref = -1
 
         for k in range(shape[2]) :
-
             z = z_grid[i,j,k]
 
             if z >= 0 :
-
                 if z == z_ref :
-
                     T[i,j,k] = T[i,j,k-1]
                     P[i,j,k] = P[i,j,k-1]
-                    Xm_h2o[i,j,k] = Xm_h2o[i,j,k-1]
+                    Xm_Q[i,j,k] = Xm_Q[i,j,k-1]
                     Cn[i,j,k] = Cn[i,j,k-1]
-
                 else :
-
                     T[i,j,k] = T_col[z]
                     P[i,j,k] = P_col[z]
-                    Xm_h2o[i,j,k] = h2o_col[z]
+                    Xm_Q[i,j,k] = Q_col[z]
                     Cn[i,j,k] = P_col[z]/(R_gp*T_col[z])*N_A
 
                     z_ref = z
 
     for j in range(1,shape[1]) :
-
         T[:,j,:] = T[:,0,:]
         P[:,j,:] = P[:,0,:]
-        Xm_h2o[:,j,:] = Xm_h2o[:,0,:]
+        Xm_Q[:,j,:] = Xm_Q[:,0,:]
         Cn[:,j,:] = Cn[:,0,:]
 
-
-    return P,T,Xm_h2o
+    return P,T,Xm_Q
 
 
 ########################################################################################################################
 
 
-def PTprofil1D(Rp,g0,M,P_surf,T_iso,n_species,x_ratio_species,r_step,delta_z,dim,number,Middle,Origin,Gravity) :
+def PTprofil1D(Rp,g0,M,P_surf,T_iso,n_species,x_ratio_species,r_step,delta_z,dim,number,rank,Middle,Origin,Gravity) :
 
     data_convert = np.zeros((number,1,dim,1,1))
 
@@ -4280,58 +2215,49 @@ def PTprofil1D(Rp,g0,M,P_surf,T_iso,n_species,x_ratio_species,r_step,delta_z,dim
     for i in range(n_species.size) :
         data_convert[2+i,:,:,:,:] = x_ratio_species[i]
 
-    bar = ProgressBar(dim,'Computation of the atmospheric dataset')
+    if rank ==0 :
+        bar = ProgressBar(dim,'Computation of the atmospheric dataset')
 
     for i_z in range(1,dim) :
 
         if Middle == False :
-
             z_ref = i_z*delta_z
-
         else :
-
-            z_ref = (i_z - 0.5)*delta_z
+            if i_z != dim-1 :
+                z_ref = (i_z - 0.5)*delta_z
+            else :
+                z_ref = (i_z - 1)*delta_z
 
         if Origin == True :
-
             if i_z != 1 :
-
                 data_convert[0,0,i_z,0,0] = data_convert[0,0,i_z-1,0,0]*np.exp(-data_convert[number-1,0,i_z-1,0,0]*g0*\
                                     delta_z/(R_gp*data_convert[1,0,i_z-1,0,0])*1/((1+(z_ref-1*r_step)/Rp)*(1+z_ref/Rp)))
             else :
-
                 data_convert[0,0,i_z,0,0] = data_convert[0,0,i_z-1,0,0]*np.exp(-data_convert[number-1,0,i_z-1,0,0]*g0*\
                                     delta_z/(2*R_gp*data_convert[1,0,i_z-1,0,0])*1/((1+(z_ref-0.5*r_step)/Rp)*(1+z_ref/Rp)))
-
         else :
-
             if Gravity == False :
                 data_convert[0,0,i_z,0,0] = P_surf*np.exp(-data_convert[number-1,0,i_z-1,0,0]*g0/(R_gp*data_convert[1,0,i_z-1,0,0])*((z_ref/(1+z_ref/Rp))))
             else :
                 data_convert[0,0,i_z,0,0] = P_surf*np.exp(-data_convert[number-1,0,i_z-1,0,0]*g0/(R_gp*data_convert[1,0,i_z-1,0,0])*z_ref)
 
-        bar.animate(i_z + 1)
+        if rank == 0 :
+            bar.animate(i_z + 1)
 
     list = np.array([])
 
     for i in range(number) :
-
         wh = np.where(data_convert[i] < 0)
-
         if len(wh[0]) != 0 :
-
             list = np.append(list,i)
 
     if list.size != 0 :
-
         mess = 'Dataset error, negative value encontered for axis : '
-
         for i in range(list.size) :
-
             mess += '%i, '%(list[i])
-
         mess += 'a correction is necessary, or Boxes failed'
 
-        print mess
+        if rank == 0 :
+            print mess
 
     return data_convert
