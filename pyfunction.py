@@ -1,5 +1,6 @@
 import math as math
 from pyconstant import *
+from scipy import integrate
 
 import matplotlib.pyplot as plt
 from netCDF4 import Dataset
@@ -18,7 +19,7 @@ import sys, time, os
     fonctions ne sont plus utilisees dans l'absolue mais pourront l'etre a l'avenir, nous avons donc fait le choix de
     les conserver.
 
-    Version : 6.2
+    Version : 6.3
 
     Date de derniere modification : 06.07.2016
 
@@ -33,6 +34,12 @@ import sys, time, os
     >> Fonctions d'enregistrement des fichiers
     >> Fonctions d'accompagnement des fonctions de pygcmtreat (rendre la bibliotheque plus lisible et pouvoir ainsi
     la mettre a jour plus aisement)
+
+    Date de derniere modification : 23.03.2018
+
+    >> Allegement des noms de fichiers
+
+    Date de derniere modification : 23.04.2018
 
 """
 
@@ -89,11 +96,11 @@ def resolution_convertator(I,wavenumber_ref,bande_ref,R_s,Rp,r_step,extra,trans,
 ########################################################################################################################
 
 
-def stud_type(r_eff,single,Continuum=False,Isolated=False,Scattering=False,Clouds=False) :
+def stud_type(r_eff,single,Continuum=False,Molecular=False,Scattering=False,Clouds=False) :
 
     stu = np.array([])
 
-    if Isolated == True :
+    if Molecular == False :
 
         if Continuum == True :
             stu = np.append(stu,np.array(["cont"]))
@@ -124,12 +131,17 @@ def stud_type(r_eff,single,Continuum=False,Isolated=False,Scattering=False,Cloud
         stu = np.append(stu,np.array(["tot"]))
 
     link = stu.size
+    stud = ''
 
     if link == 1 :
 
-        if Isolated == True :
+        if Molecular == False :
             if Clouds == True :
-                stud = "%.2f_%s"%(r_eff*10**6,stu[0])
+                for i_r in range(r_eff.size) :
+                    if i_r != r_eff.size-1 :
+                        stud += "%.2f_"%(r_eff[i_r]*10**6)
+                    else :
+                        stud += "%.2f_%s"%(r_eff[i_r]*10**6,stu[0])
             else :
                 stud = "%s"%(stu[0])
         else :
@@ -138,21 +150,33 @@ def stud_type(r_eff,single,Continuum=False,Isolated=False,Scattering=False,Cloud
     if link == 2 :
 
         if Clouds == True :
-            stud = "%.2f_%s%s"%(r_eff*10**6,stu[0],stu[1])
+            for i_r in range(r_eff.size) :
+                if i_r != r_eff.size-1 :
+                    stud += "%.2f_"%(r_eff[i_r]*10**6)
+                else :
+                    stud += "%.2f_%s%s"%(r_eff[i_r]*10**6,stu[0],stu[1])
         else :
             stud = "%s%s"%(stu[0],stu[1])
 
     if link == 3 :
 
         if Clouds == True :
-            stud = "%.2f_%s%s%s"%(r_eff*10**6,stu[0],stu[1],stu[2])
+            for i_r in range(r_eff.size) :
+                if i_r != r_eff.size-1 :
+                    stud = "%.2f_"%(r_eff[i_r]*10**6)
+                else :
+                    stud += "%.2f_%s%s%s"%(r_eff[i_r]*10**6,stu[0],stu[1],stu[2])
         else :
             stud = "%s%s%s"%(stu[0],stu[1],stu[2])
 
     if link == 4 :
 
         if Clouds == True :
-            stud = "%.2f_tot"%(r_eff*10**6)
+            for i_r in range(r_eff.size) :
+                if i_r != r_eff.size-1 :
+                    stud += "%.2f_"%(r_eff[i_r]*10**6)
+                else :
+                    stud += "%.2f_tot"%(r_eff[i_r]*10**6)
         else :
             stud = "tot"
 
@@ -162,7 +186,7 @@ def stud_type(r_eff,single,Continuum=False,Isolated=False,Scattering=False,Cloud
 ########################################################################################################################
 
 
-def saving(dimension,type,special,save_adress,version,name,reso_long,reso_lat,t,h,dim_bande,dim_gauss,r_step,phi_rot,r_eff,\
+def saving(dimension,type,special,save_adress,version,name,reso_long,reso_lat,t,h,dim_bande,dim_gauss,r_step,obs,r_eff,\
            domain,stud,lim_alt,rupt_alt,long,lat,Discreet,Integration,Module,Optimal,Kcorr,D1) :
 
     s_n = special
@@ -210,23 +234,34 @@ def saving(dimension,type,special,save_adress,version,name,reso_long,reso_lat,t,
     if dimension == '3D' :
         D = 3
 
+    incrotob = ''
+    if obs[0] != 0. :
+        incrotob += 'la%.3f'%(np.float(obs[0]))
+        if obs[1] != 0. :
+            incrotob += '_lo%.3f_'%(np.float(obs[1]))
+        else :
+            incrotob += '_'
+    else :
+        if obs[1] != 0. :
+            incrotob += 'lo%.3f_'%(np.float(obs[1]))
+
     if Kcorr == True :
         if D1 == False :
-            s_m = '%sI_%s_%.1f_%s_%i_%i%i_%i_%i%i_%s_%i_%.2f_%.2f_%s_%s'\
-                %(save_adress,s_n,version,name,D,reso_long,reso_lat,t,dim_bande,dim_gauss,h_range,r_step,phi_rot,r_eff*10**6,\
+            s_m = '%sI_%s_%.1f_%s_%i_%ix%i_%i_%ix%i_%s_%i_%s%s_%s'\
+                %(save_adress,s_n,version,name,D,reso_long,reso_lat,t,dim_bande,dim_gauss,h_range,r_step,incrotob,\
                   stud,domain)
         else :
-            s_m = '%sI_%s_%.1f_%s_%i_%i_%i_%i%i_%i_%i%i_%s_%i_%.2f_%.2f_%s_%s'\
-                %(save_adress,s_n,version,name,D,long,lat,reso_long,reso_lat,t,dim_bande,dim_gauss,h_range,r_step,phi_rot,r_eff*10**6,\
+            s_m = '%sI_%s_%.1f_%s_%i_%i_%i_%ix%i_%i_%ix%i_%s_%i_%s%s_%s'\
+                %(save_adress,s_n,version,name,D,long,lat,reso_long,reso_lat,t,dim_bande,dim_gauss,h_range,r_step,incrotob,\
                   stud,domain)
     else :
         if D1 == False :
-            s_m = "%sI_%s_%.1f_%s_%i_%i%i_%i_%i_%s_%i_%.2f_%.2f_%s_%s"\
-                %(save_adress,s_n,version,name,D,reso_long,reso_lat,t,dim_bande,h_range,r_step,phi_rot,r_eff*10**6,\
+            s_m = "%sI_%s_%.1f_%s_%i_%ix%i_%i_%i_%s_%i_%s%s_%s"\
+                %(save_adress,s_n,version,name,D,reso_long,reso_lat,t,dim_bande,h_range,r_step,incrotob,\
                     stud,domain)
         else :
-            s_m = "%sI_%s_%.1f_%s_%i_%i_%i_%i%i_%i_%i_%s_%i_%.2f_%.2f_%s_%s"\
-                %(save_adress,s_n,version,name,D,long,lat,reso_long,reso_lat,t,dim_bande,h_range,r_step,phi_rot,r_eff*10**6,\
+            s_m = "%sI_%s_%.1f_%s_%i_%i_%i_%ix%i_%i_%i_%s_%i_%s%s_%s"\
+                %(save_adress,s_n,version,name,D,long,lat,reso_long,reso_lat,t,dim_bande,h_range,r_step,incrotob,\
                   stud,domain)
 
     return s_m
@@ -284,25 +319,35 @@ def diag(data_base) :
     controle = variables["controle"][:]
     Rp = controle[4]
     g = controle[6]
-    reso_long = controle[0]
-    reso_lat = controle[1]
+    reso_long = int(controle[0])
+    reso_lat = int(controle[1])
+    long_lat = np.zeros((2,int(np.amax(np.array([reso_long,reso_lat])))+1))
+    degpi = np.pi/180.
+    long_lat[0,0:reso_long+1] = np.linspace(-180.*degpi,180.*degpi,reso_long+1,dtype=np.float64)
+    long_lat[1,0:reso_lat+1] = np.linspace(-90*degpi,90.*degpi,reso_lat+1,dtype=np.float64)
+    inverse = np.array(['False','False'])
+    if variables['longitude'][0] == 180. :
+        inverse[0] = 'True'
+    if variables['latitude'][0] == 90. :
+        inverse[1] = 'True'
 
-    return Rp,g,reso_long,reso_lat
+    return Rp,g,reso_long,reso_lat,long_lat,inverse
 
 
 ########################################################################################################################
 
 
-def sort_set_param(P,T,Q,gen,compo,Marker=False,Clouds=False) :
+def sort_set_param(P,T,Q,gen,compo,rank,Tracer=False,Clouds=False) :
 
     sh = np.shape(P)
     ind = 0
     P_rmd = np.zeros(sh[0]*sh[1]*sh[2])
     T_rmd = np.zeros(sh[0]*sh[1]*sh[2])
 
-    bar = ProgressBar(sh[0],'Reduction of the parameters')
+    if rank == 0 :
+        bar = ProgressBar(sh[0],'Reduction of the parameters')
 
-    if Marker == True :
+    if Tracer == True :
         Q_rmd = np.zeros(sh[0]*sh[1]*sh[2])
     else :
         Q_r = 0
@@ -325,7 +370,7 @@ def sort_set_param(P,T,Q,gen,compo,Marker=False,Clouds=False) :
             P_rmd[ind:ind+wh.size] = P[i,j,wh]
             T_rmd[ind:ind+wh.size] = T[i,j,wh]
 
-            if Marker == True :
+            if Tracer == True :
                 Q_rmd[ind:ind+wh.size] = Q[i,j,wh]
 
             if Clouds == True :
@@ -335,7 +380,8 @@ def sort_set_param(P,T,Q,gen,compo,Marker=False,Clouds=False) :
 
             ind += wh.size
 
-        bar.animate(i + 1)
+        if rank == 0 :
+            bar.animate(i + 1)
 
     del P,T,Q,compo,gen
 
@@ -352,7 +398,7 @@ def sort_set_param(P,T,Q,gen,compo,Marker=False,Clouds=False) :
     compo_s = compo_rmd[:,indices]
     del compo_rmd
 
-    if Marker == True :
+    if Tracer == True :
         Q_rmd = Q_rmd[wh]
         Q_s = Q_rmd[indices]
         del Q_rmd
@@ -364,27 +410,29 @@ def sort_set_param(P,T,Q,gen,compo,Marker=False,Clouds=False) :
 
     del P_rmd,T_rmd
 
-    bar = ProgressBar(wh.size, 'Sort and set of the parameters')
+    if rank == 0 :
+        bar = ProgressBar(wh.size, 'Sort and set of the parameters')
 
     list = []
 
     for ind in xrange(1,wh.size) :
 
-        if Marker == True :
+        if Tracer == True :
             if P_s[ind] == P_s[ind - 1] and T_s[ind] == T_s[ind - 1] and Q_s[ind] == Q_s[ind - 1]:
                 list.append(ind)
         else :
             if P_s[ind] == P_s[ind - 1] and T_s[ind] == T_s[ind - 1] :
                 list.append(ind)
 
-        if ind%100000 == 0 or ind == wh.size - 1 :
-            bar.animate(ind +1)
+        if rank == 0 :
+            if ind%100000 == 0 or ind == wh.size - 1 :
+                bar.animate(ind +1)
 
     P_r = np.delete(P_s,list)
     T_r = np.delete(T_s,list)
     compo_r = np.delete(compo_s,list,axis=1)
 
-    if Marker == True :
+    if Tracer == True :
         Q_r = np.delete(Q_s,list)
 
     if Clouds == True :
@@ -458,10 +506,10 @@ def calibration(R,R_eff,spec,min,max,Rs) :
 
 
 def maker_contribution_HR(adress,version,name,dim_bande,lim_alt,reso_step,reso_theta,reso_alt,reso_long,reso_lat,phi_rot,reff,number,single,\
-                          Isolated=False,Continuum=False,Scattering=False,Clouds=False,Remove=False) :
+                          Molecular=False,Continuum=False,Scattering=False,Clouds=False,Remove=False) :
 
     reso_cut = dim_bande/number
-    type = stud_type(single,Continuum,Isolated,Scattering,Clouds)
+    type = stud_type(single,Continuum,Molecular,Scattering,Clouds)
     I = np.zeros((dim_bande,reso_alt,reso_theta),dtype=np.float64)
 
     for i in range(number) :
@@ -483,15 +531,15 @@ def maker_contribution_HR(adress,version,name,dim_bande,lim_alt,reso_step,reso_t
 
 
 def mixing_contribution_HR(adress,version,name,reso_long,reso_lat,dim_bande,lim_alt,reso_step,phi_rot,reff,c_name,\
-                           Isolated,Continuum,Scattering,Clouds,single) :
+                           Molecular,Continuum,Scattering,Clouds,single) :
 
-    stud = stud_type(single,Continuum,Isolated,Scattering,Clouds)
+    stud = stud_type(single,Continuum,Molecular,Scattering,Clouds)
     t_corr = 0
     t_cont = 0
     t_sca = 0
     t_cloud = 0
 
-    if Isolated == False :
+    if Molecular == True :
 
         I_corr = np.load('%s%s/I_%s_%s_3_%i%i_5_%i_%i_%i_%.2f_%.2f_nude_HR.npy'\
                          %(adress,name,version,name,reso_long,reso_lat,dim_bande,lim_alt,reso_step,phi_rot,reff))
@@ -544,72 +592,79 @@ def mixing_contribution_HR(adress,version,name,reso_long,reso_lat,dim_bande,lim_
 ########################################################################################################################
 
 
-def atmosphere_plot(I_tot,h,param,factor,r_step,theta_number,wl,bande_sample,name,Rp,R_s,extra,trans,Kcorr,Middle) :
+def atmosphere_plot(I_tot,h,param,factor,r_step,theta_number,wl,bande_sample,name,Rp,R_s,extra,where,trans,Kcorr,Middle,Cache) :
 
     theta_step = 2*np.pi/np.float(theta_number)
     R = Rp/np.float(factor)
     dim = int((R+1.15*h)/param)
-    print h, R, dim, param
+
     from pytransfert import atmospectre
     wl_sample_micron = 1./bande_sample*1.0e+4
     ind, = np.where(wl_sample_micron <= wl)
     i_bande = ind[0]
     print 'Selected wavelength : %.3f'%(wl_sample_micron[i_bande])
 
-    I_png = np.ones((2*dim,2*dim))
+    I_png = np.ones((2*dim+1,2*dim+1))
+    center = np.ones((2*dim+1,2*dim+1))
     I = I_tot[i_bande,:,:]
 
     bar = ProgressBar(2*dim+1,'Image generation')
 
-    for i in range(-dim,dim) :
+    for y in range(-dim,dim+1) :
 
-        for j in range(-dim,dim) :
-            rho = np.sqrt((i*param)**2 + (j*param)**2)
+        for x in range(-dim,dim+1) :
+            rho = np.sqrt((x*param)**2 + (y*param)**2)
 
             if rho <= R + h :
 
                 if rho >= R :
 
-                    theta = -math.atan2(i*param,j*param)
+                    theta = np.arctan2(y*param,x*param)
+                    if theta < 0 :
+                        theta = 2*np.pi + theta
 
-                    if theta >= 0 :
-                        theta_line = int(round(theta/theta_step))
-                    else :
-                        theta_line = theta_number + int(round(theta/theta_step))
-                        if theta_line == theta_number :
-                            theta_line = 0
+                    theta_line = int(round(theta/theta_step))
+                    if theta_line == theta_number :
+                        theta_line = 0
 
                     r = rho - R
                     r_line = int(round(r/r_step))
-                    I_png[i+dim,j+dim] = I[r_line,theta_line]
+                    if r_line >= int(h/r_step) :
+                        r_line = int(h/r_step)-1
+                    I_png[y+dim,x+dim] = I[r_line,theta_line]
 
                 else :
 
-                    I_png[i+dim,j+dim] = 'nan'
+                    I_png[y+dim,x+dim] = 'nan'
+                    center[y+dim,x+dim] = 'nan'
 
-        bar.animate(i+dim+1)
+        bar.animate(y+dim+1)
 
-    x = np.arange(-dim*param,dim*param,param)
-    y = -np.arange(-dim*param,dim*param,param)
+    x = np.linspace(-dim*param,dim*param,2*dim+1)
+    y = np.linspace(-dim*param,dim*param,2*dim+1)
     X,Y = np.meshgrid(x,y)
+    if Cache == True :
+        I_png[where[0],where[1]] = 1.
+        wh = np.where(center != 1.)
+        I_png[wh[0],wh[1]] = 'nan'
     Z = I_png
     R_eff_bar,R_e,ratio_bar,ratR_bar,bande_bar,flux_bar,flux = atmospectre(I_tot,bande_sample,R_s,Rp,r_step*factor,extra,trans,Kcorr,Middle)
     R_eff = (R_e[i_bande]/factor - Rp/factor + R)
-    print(R_e[i_bande]/factor,Rp/factor,R_eff)
 
-    plt.imshow(I_png, extent = [-dim*param*factor/1000.,dim*param*factor/1000.,-dim*param*factor/1000.,dim*param*factor/1000.])
+    plt.figure(figsize=(12, 9))
+    plt.imshow(I_png, extent = [-dim*param/1000.,dim*param/1000.,-dim*param/1000.,dim*param/1000.],origin='lower')
     plt.colorbar()
     lev = np.array([0,np.exp(-1),0.73,0.99])
-    CS = plt.contour(X*factor/1000.,Y*factor/1000.,Z,levels=lev,colors='k')
+    CS = plt.contour(X/1000.,Y/1000.,Z,levels=lev,colors='k')
     plt.clabel(CS,frontsize = 3, inline = 0)
 
     wh_R, = np.where((x >= -R-h)*(x <= R+h))
-    line_b = np.sqrt(((R+h)**2 - (x[wh_R])**2))*factor/1000.
+    line_b = np.sqrt(((R+h)**2 - (x[wh_R])**2))/1000.
     line_black = np.zeros(line_b.size+2)
     line_black[1:line_black.size-1] = line_b
 
     wh_Reff, = np.where((x >= -R_eff)*(x <= R_eff))
-    line_r = np.sqrt(((R_eff)**2 - (x[wh_Reff])**2))*factor/1000.
+    line_r = np.sqrt(((R_eff)**2 - (x[wh_Reff])**2))/1000.
     line_red = np.zeros(line_r.size+2)
     line_red[1:line_red.size-1] = line_r
 
@@ -620,10 +675,10 @@ def atmosphere_plot(I_tot,h,param,factor,r_step,theta_number,wl,bande_sample,nam
     x_R[0],x_R[x_R.size-1] = -R-h,R+h
     x_R[1:x_R.size-1] = x[wh_R]
 
-    plt.plot(x_Reff*factor/1000.,line_red,'--w',linewidth = 3)
-    plt.plot(x_Reff*factor/1000.,-line_red,'--w', linewidth = 3)
-    plt.plot(x_R*factor/1000.,line_black,'--k',linewidth = 3)
-    plt.plot(x_R*factor/1000.,-line_black,'--k', linewidth = 3)
+    plt.plot(x_Reff/1000.,line_red,'--w',linewidth = 3)
+    plt.plot(x_Reff/1000.,-line_red,'--w', linewidth = 3)
+    plt.plot(x_R/1000.,line_black,'--k',linewidth = 3)
+    plt.plot(x_R/1000.,-line_black,'--k', linewidth = 3)
     plt.xlabel("x (km)")
     plt.ylabel("y (km)")
 
@@ -719,129 +774,6 @@ def Mean1Dmaker(I_all,I,bande_sample,R_s,Rp,r_step,theta_number,extra,name,Kcorr
 
 
 ########################################################################################################################
-########################################################################################################################
-
-"""
-    PROFIL_CYLCART
-
-    Cette fonction transpose une ligne de la grille cartesienne dans la grille cylindrique et produit un profil de
-    transmittance. A partir de ce profil (qui est construit par estimation de la position des points de variations
-    de la transmittance) elle genere un tableau aux dimensions necessaires pour remplir la zone de transmittance
-    associee a l'atmosphere dans la grille cartesienne. Elle realise ces profils de chaque cote de la planete. L'
-    interpolation utilisee est ici lineaire mais peut etre modifiee.
-
-    La fonction retourne les deux tableaux a coller dans la grille cartesienne pour chaque cote de l'hemisphere. Cette
-    technique permet d'interpoler la grille cylindrique sans en augmenter la resolution.
-
-"""
-
-########################################################################################################################
-########################################################################################################################
-
-
-def profil_cylcart(I,Rp,h,B,r_step,theta_step,theta_number,param,pas,Climu,Climd) :
-
-    X_u = np.arange(Climd,Climu + param, param)
-    X_d = np.arange(-Climu,-Climd+param, param)
-
-    x_slice = np.arange(0,h,pas)
-
-    if abs(B) < Rp :
-        lim_ud = np.sqrt(Rp**2 - B**2)
-    else :
-        lim_ud = 0
-
-    I_ref_u = np.array([])
-    x_ref_u = np.array([])
-    pond_u = np.array([])
-    I_ref_d = np.array([])
-    x_ref_d = np.array([])
-    pond_d = np.array([])
-    i = 0
-
-    for x in x_slice :
-
-        C_u = lim_ud + x
-        theta_u = math.atan2(B,C_u)
-
-        if theta_u >= 0 :
-
-            i_theta_u = int(round(theta_u/theta_step))
-            theta_d = np.pi - theta_u
-            i_theta_d = int(round(theta_d/theta_step))
-
-            if i_theta_u == theta_number :
-                i_theta_u = 0
-
-            if i_theta_d == theta_number :
-                i_theta_d = 0
-
-        if theta_u < 0 :
-
-            i_theta_u = theta_number + int(round(theta_u/theta_step))
-            theta_d = - np.pi - theta_u
-            i_theta_d = theta_number + int(round(theta_d/theta_step))
-
-            if i_theta_u == theta_number :
-                i_theta_u = 0
-
-            if i_theta_d == theta_number :
-                i_theta_d = 0
-
-        if x == 0 :
-            i_z = 0
-        else :
-            i_z = int(round((np.sqrt((lim_ud+x)**2 + B**2) - Rp)/float(r_step)))
-
-        if x == x_slice[0] :
-
-            i_theta_comp_u = i_theta_u
-            i_theta_comp_d = i_theta_d
-
-            i_z_comp_u = i_z
-            i_z_comp_d = i_z
-
-            deb_u = 0
-            deb_d = 0
-
-        else :
-
-            if i_theta_u != i_theta_comp_u or i_z != i_z_comp_u :
-
-                fin_u = i
-
-                I_ref_u = np.append(I_ref_u, np.array(I[i_theta_comp_u,i_z_comp_d]))
-                x_ref_u = np.append(x_ref_u, np.array(lim_ud + x_slice[int((fin_u+deb_u)/2.)]))
-                pond_u = np.append(pond_u, np.array([fin_u - deb_u + 1]))
-
-                deb_u = i + 1
-
-                i_theta_comp_u = i_theta_u
-                i_z_comp_u = i_z
-
-            if i_theta_d != i_theta_comp_d or i_z != i_z_comp_d :
-
-                fin_d = i
-
-                I_ref_d = np.append(I_ref_d, np.array(I[i_theta_comp_d,i_z_comp_d]))
-                x_ref_d = np.append(x_ref_d, np.array(-lim_ud - x_slice[int((fin_d+deb_d)/2.)]))
-                pond_d = np.append(pond_d, np.array([fin_d - deb_d + 1]))
-
-                deb_d = i + 1
-
-                i_theta_comp_d = i_theta_d
-                i_z_comp_d = i_z
-
-
-        i = i + 1
-
-    I_table_u = np.interp(X_u,x_ref_u,I_ref_u)
-    I_table_d = np.interp(-X_d,-x_ref_d,I_ref_d)
-
-    return I_table_d,I_table_u
-
-
-########################################################################################################################
 
 
 def repartition(axes,number_rank,rank,linear=False) :
@@ -932,8 +864,11 @@ def order_assign(z,p,q,k,ind,assist):
 
 
 def latlongalt(Rp,h,r,rho,r_step,z_level,delta,delta_step,reso_lat,alpha,alpha_o_ref,alpha_o_ref_0,alpha_step,reso_long,phi_obli,\
-               x,x_range,x_reso,x_step,theta_range,theta_number,begin,inv,refrac,\
+               x,x_range,x_reso,x_step,theta_range,theta_number,begin,inv,refrac,long_lat,\
                Theta_init=False,Middle=True,Obliquity=False) :
+
+    long_ref = long_lat[0,0:reso_long+1]
+    lat_ref = long_lat[1,0:reso_lat+1]
 
     if Theta_init == True :
 
@@ -975,10 +910,10 @@ def latlongalt(Rp,h,r,rho,r_step,z_level,delta,delta_step,reso_lat,alpha,alpha_o
 
         if delta%delta_step < delta_step/2. :
             delta_norm = delta - delta%delta_step
-            p = int(round(delta_norm*reso_lat/np.pi+reso_lat/2))
         else :
             delta_norm = delta - delta%delta_step + delta_step
-            p = int(round(delta_norm*reso_lat/np.pi+reso_lat/2))
+        p, = np.where(np.round(lat_ref,7) == np.round(delta_norm,7))
+        p = p[0]
 
         # A partir de la longitude, on en deduit l'indice q correspondant dans la maille spherique, cet
         # indice doit evoluer entre 0 (alpha -pi) et reso_long (alpha pi), sachant que le premier et le
@@ -986,10 +921,10 @@ def latlongalt(Rp,h,r,rho,r_step,z_level,delta,delta_step,reso_lat,alpha,alpha_o
 
         if alpha%alpha_step < alpha_step/2. :
             alpha_norm = alpha - alpha%alpha_step
-            q = reso_long/2 + int(round(alpha_norm*reso_long/(2*np.pi)))
         else :
             alpha_norm = alpha - alpha%alpha_step + alpha_step
-            q = reso_long/2 + int(round(alpha_norm*reso_long/(2*np.pi)))
+        q, = np.where(np.round(long_ref,7) == np.round(alpha_norm,7))
+        q = q[0]
 
         if q == reso_long :
             q = 0
@@ -1020,14 +955,14 @@ def latlongalt(Rp,h,r,rho,r_step,z_level,delta,delta_step,reso_lat,alpha,alpha_o
                 x_ref = r*np.tan(np.pi-np.abs(phi_obli))
 
         q, alpha_o_ref, alpha_o_ref_0, inv, refrac, begin = qoblicator(theta_range,x,x_range,x_ref,theta_number,phi_obli,\
-                                        alpha_o,alpha_o_ref,alpha_o_ref_0,alpha_step,reso_long,inv,refrac,begin)
+                                        alpha_o,alpha_o_ref,alpha_o_ref_0,alpha_step,reso_long,inv,refrac,begin,long_ref)
 
         if delta_o%delta_step < delta_step/2. :
             delta_norm = delta_o - delta_o%delta_step
-            p = int(round(delta_norm*reso_lat/np.pi+reso_lat/2))
         else :
             delta_norm = delta_o - delta_o%delta_step + delta_step
-            p = int(round(delta_norm*reso_lat/np.pi+reso_lat/2))
+        p, = np.where(np.round(lat_ref,7) == np.round(delta_norm,7))
+        p = p[0]
 
     return p, q, z, alpha_o_ref, alpha_o_ref_0, inv, refrac, begin
 
@@ -1035,7 +970,7 @@ def latlongalt(Rp,h,r,rho,r_step,z_level,delta,delta_step,reso_lat,alpha,alpha_o
 ########################################################################################################################
 
 
-def qoblicator(theta_range,x,x_range,x_ref,theta_number,phi_obli,alpha_o,alpha_o_ref,alpha_o_ref_0,alpha_step,reso_long,inv,refrac,begin) :
+def qoblicator(theta_range,x,x_range,x_ref,theta_number,phi_obli,alpha_o,alpha_o_ref,alpha_o_ref_0,alpha_step,reso_long,inv,refrac,begin,long_ref) :
 
     if theta_range < theta_number/4 or theta_range > 3*theta_number/4 :
         # la longitude equatoriale est comprise entre pi/2 et 3pi/2 tandis que l'angle de reference des
@@ -1155,11 +1090,8 @@ def qoblicator(theta_range,x,x_range,x_ref,theta_number,phi_obli,alpha_o,alpha_o
             alpha_norm = alpha_o - alpha_o%alpha_step
         else :
             alpha_norm = alpha_o - alpha_o%alpha_step + alpha_step
-
-        if alpha_norm >= 0. and alpha_norm <= 3*np.pi/2. :
-            q_o = int(reso_long/4 + int(round(alpha_norm*reso_long/(2*np.pi))))
-        if alpha_norm > 3*np.pi/2. and alpha_norm <= 2*np.pi :
-            q_o = int(int(round(alpha_norm*reso_long/(2*np.pi)))-3*reso_long/4)
+        q_o, = np.where(np.round(long_ref,7) == np.round(alpha_norm,7))
+        q_o = q_o[0]
 
         if q_o == reso_long :
             q_o = 0
@@ -1172,11 +1104,8 @@ def qoblicator(theta_range,x,x_range,x_ref,theta_number,phi_obli,alpha_o,alpha_o
                 alpha_norm = alpha_o - alpha_o%alpha_step
             else :
                 alpha_norm = alpha_o - alpha_o%alpha_step + alpha_step
-
-            if alpha_norm >= 0. and alpha_norm <= 3*np.pi/2. :
-                q_o = int(reso_long/4 + int(round(alpha_norm*reso_long/(2*np.pi))))
-            if alpha_norm > 3*np.pi/2. and alpha_norm <= 2*np.pi :
-                q_o = int(int(round(alpha_norm*reso_long/(2*np.pi)))-3*reso_long/4)
+            q_o, = np.where(np.round(long_ref,7) == np.round(alpha_norm,7))
+            q_o = q_o[0]
 
             if q_o == reso_long :
                 q_o = 0
@@ -1192,10 +1121,8 @@ def qoblicator(theta_range,x,x_range,x_ref,theta_number,phi_obli,alpha_o,alpha_o
                 else :
                     alpha_norm = alpha_o - alpha_o%alpha_step + alpha_step
 
-                if alpha_norm >= 0. and alpha_norm <= 3*np.pi/2. :
-                    q_o = int(reso_long/4 + int(round(alpha_norm*reso_long/(2*np.pi))))
-                if alpha_norm > 3*np.pi/2. and alpha_norm <= 2*np.pi :
-                    q_o = int(int(round(alpha_norm*reso_long/(2*np.pi)))-3*reso_long/4)
+                q_o, = np.where(np.round(long_ref,7) == np.round(alpha_norm,7))
+                q_o = q_o[0]
 
                 if q_o == reso_long : q_o = 0
 
@@ -1205,11 +1132,8 @@ def qoblicator(theta_range,x,x_range,x_ref,theta_number,phi_obli,alpha_o,alpha_o
                     alpha_norm = alpha_o_ref_0 - alpha_o_ref_0%alpha_step
                 else :
                     alpha_norm = alpha_o_ref_0 - alpha_o_ref_0%alpha_step + alpha_step
-
-                if alpha_norm >= 0. and alpha_norm <= 3*np.pi/2. :
-                    q_o = int(reso_long/4 + int(round(alpha_norm*reso_long/(2*np.pi))))
-                if alpha_norm > 3*np.pi/2. and alpha_norm <= 2*np.pi :
-                    q_o = int(int(round(alpha_norm*reso_long/(2*np.pi)))-3*reso_long/4)
+                q_o, = np.where(np.round(long_ref,7) == np.round(alpha_norm,7))
+                q_o = q_o[0]
 
                 if q_o == reso_long : q_o = 0
 
@@ -1227,7 +1151,7 @@ def qoblicator(theta_range,x,x_range,x_ref,theta_number,phi_obli,alpha_o,alpha_o
 ########################################################################################################################
 
 
-def qoblicator_neg(theta_range,x,x_range,x_ref,theta_number,phi_obli,alpha_o,alpha_o_ref,alpha_step,reso_long,inv,refrac,begin) :
+def qoblicator_neg(theta_range,x,x_range,x_ref,theta_number,phi_obli,alpha_o,alpha_o_ref,alpha_step,reso_long,inv,refrac,begin,long_ref) :
 
     if theta_range < theta_number/4 or theta_range > 3*theta_number/4 :
         # la longitude equatoriale est comprise entre pi/2 et 3pi/2 tandis que l'angle de reference des
@@ -1348,11 +1272,8 @@ def qoblicator_neg(theta_range,x,x_range,x_ref,theta_number,phi_obli,alpha_o,alp
             alpha_norm = alpha_o - alpha_o%alpha_step
         else :
             alpha_norm = alpha_o - alpha_o%alpha_step + alpha_step
-
-        if alpha_norm >= 0. and alpha_norm <= 3*np.pi/2. :
-            q_o = int(reso_long/4 + int(round(alpha_norm*reso_long/(2*np.pi))))
-        if alpha_norm > 3*np.pi/2. and alpha_norm <= 2*np.pi :
-            q_o = int(int(round(alpha_norm*reso_long/(2*np.pi)))-3*reso_long/4)
+        q_o, = np.where(np.round(long_ref,7) == np.round(alpha_norm,7))
+        q_o = q_o[0]
 
         if q_o == reso_long :
             q_o = 0
@@ -1365,11 +1286,8 @@ def qoblicator_neg(theta_range,x,x_range,x_ref,theta_number,phi_obli,alpha_o,alp
                 alpha_norm = alpha_o - alpha_o%alpha_step
             else :
                 alpha_norm = alpha_o - alpha_o%alpha_step + alpha_step
-
-            if alpha_norm >= 0. and alpha_norm <= 3*np.pi/2. :
-                q_o = int(reso_long/4 + int(round(alpha_norm*reso_long/(2*np.pi))))
-            if alpha_norm > 3*np.pi/2. and alpha_norm <= 2*np.pi :
-                q_o = int(int(round(alpha_norm*reso_long/(2*np.pi)))-3*reso_long/4)
+            q_o, = np.where(np.round(long_ref,7) == np.round(alpha_norm,7))
+            q_o = q_o[0]
 
             if q_o == reso_long :
                 q_o = 0
@@ -1384,11 +1302,8 @@ def qoblicator_neg(theta_range,x,x_range,x_ref,theta_number,phi_obli,alpha_o,alp
                     alpha_norm = alpha_o - alpha_o%alpha_step
                 else :
                     alpha_norm = alpha_o - alpha_o%alpha_step + alpha_step
-
-                if alpha_norm >= 0. and alpha_norm <= 3*np.pi/2. :
-                    q_o = int(reso_long/4 + int(round(alpha_norm*reso_long/(2*np.pi))))
-                if alpha_norm > 3*np.pi/2. and alpha_norm <= 2*np.pi :
-                    q_o = int(int(round(alpha_norm*reso_long/(2*np.pi)))-3*reso_long/4)
+                q_o, = np.where(np.round(long_ref,7) == np.round(alpha_norm,7))
+                q_o = q_o[0]
 
                 if q_o == reso_long : q_o = 0
 
@@ -1398,11 +1313,8 @@ def qoblicator_neg(theta_range,x,x_range,x_ref,theta_number,phi_obli,alpha_o,alp
                     alpha_norm = alpha_o_ref_0 - alpha_o_ref_0%alpha_step
                 else :
                     alpha_norm = alpha_o_ref_0 - alpha_o_ref_0%alpha_step + alpha_step
-
-                if alpha_norm >= 0. and alpha_norm <= 3*np.pi/2. :
-                    q_o = int(reso_long/4 + int(round(alpha_norm*reso_long/(2*np.pi))))
-                if alpha_norm > 3*np.pi/2. and alpha_norm <= 2*np.pi :
-                    q_o = int(int(round(alpha_norm*reso_long/(2*np.pi)))-3*reso_long/4)
+                q_o, = np.where(np.round(long_ref,7) == np.round(alpha_norm,7))
+                q_o = q_o[0]
 
                 if q_o == reso_long : q_o = 0
 
@@ -1416,25 +1328,17 @@ def qoblicator_neg(theta_range,x,x_range,x_ref,theta_number,phi_obli,alpha_o,alp
 ########################################################################################################################
 ########################################################################################################################
 
+"""
+    INTERPOLATION_TOOLS
 
-def vap_sat(T) :
+    Cette serie de fonction permet d'effectuer toutes les interpolations possibles au sein du code. Les interpolations
+    sur des tableaux, sur plusieurs dimensions (doubles et triples) et meme d'effectuer des interpolations plus
+    specifiques.
 
-    T_0, r_2, r_3, r_4, P = 273.16, 661.14, np.array([17.269,21.875]), np.array([35.86,7.66]), 0.
-
-    if T > 647. :
-        P = 1.e+10
-    if T < 100. :
-        P = 0.
-    if T > T_0 and T <= 647. :
-        P = r_2*np.exp(r_3[0]*((T-T_0)/(T-r_4[0])))
-    if T > 100. and T <= T_0 :
-        P = r_2*np.exp(r_3[1]*((T-T_0)/(T-r_4[1])))
-
-    return P
-
+"""
 
 ########################################################################################################################
-
+########################################################################################################################
 
 def interpolation(x,x_sample,grid) :
 
@@ -1716,7 +1620,7 @@ def interp3olation(x,y,z,x_sample,y_sample,z_sample,grid) :
 
         if wh_x.size == 0 :
             x_u,x_d = x_sample.size-1,x_sample.size-1
-            c1,c2 = 0.,1.
+            c1,c2 = 1.,0.
         else :
             if wh_x[0] == 0 :
                 x_u,x_d = 0,0
@@ -1724,14 +1628,13 @@ def interp3olation(x,y,z,x_sample,y_sample,z_sample,grid) :
             else :
                 x_u,x_d = wh_x[0],wh_x[0]-1
                 c1 = (X-x_sample[x_d])/(x_sample[x_u]-x_sample[x_d])
-                #c2 = (x_sample[x_u]-X)/(x_sample[x_u]-x_sample[x_d])
-                c2 = 1.-c1
+                c2 = (x_sample[x_u]-X)/(x_sample[x_u]-x_sample[x_d])
 
         wh_y, = np.where(y_sample > Y)
 
         if wh_y.size == 0 :
             y_u,y_d = y_sample.size-1,y_sample.size-1
-            c3,c4 = 0.,1.
+            c3,c4 = 1.,0.
         else :
             if wh_y[0] == 0 :
                 y_u,y_d = 0,0
@@ -1739,14 +1642,13 @@ def interp3olation(x,y,z,x_sample,y_sample,z_sample,grid) :
             else :
                 y_u,y_d = wh_y[0],wh_y[0]-1
                 c3 = (Y-y_sample[y_d])/(y_sample[y_u]-y_sample[y_d])
-                #c4 = (y_sample[y_u]-Y)/(y_sample[y_u]-y_sample[y_d])
-                c4 = 1.-c3
+                c4 = (y_sample[y_u]-Y)/(y_sample[y_u]-y_sample[y_d])
 
         wh_z, = np.where(z_sample > Z)
 
         if wh_z.size == 0 :
             z_u,z_d = x_sample.size-1,x_sample.size-1
-            c5,c6 = 0.,1.
+            c5,c6 = 1.,0.
         else :
             if wh_z[0] == 0 :
                 z_u,z_d = 0,0
@@ -1754,8 +1656,7 @@ def interp3olation(x,y,z,x_sample,y_sample,z_sample,grid) :
             else :
                 z_u,z_d = wh_z[0],wh_z[0]-1
                 c5 = (Z-z_sample[z_d])/(z_sample[z_u]-z_sample[z_d])
-                #c6 = (z_sample[z_u]-Z)/(z_sample[z_u]-z_sample[z_d])
-                c6 = 1.-c5
+                c6 = (z_sample[z_u]-Z)/(z_sample[z_u]-z_sample[z_d])
 
         c_grid[i_x,:] = np.array([c1,c2,c3,c4,c5,c6])
         i_grid[i_x,:] = np.array([x_d,x_u,y_d,y_u,z_d,z_u])
@@ -1850,7 +1751,7 @@ def interp3olation_uni_multi(x,y,z,x_sample,y_sample,z_sample,grid) :
 
     if wh_x.size == 0 :
         x_u,x_d = x_sample.size-1,x_sample.size-1
-        c1,c2 = 0.,1.
+        c1,c2 = 1.,0.
     else :
         if wh_x[0] == 0 :
             x_u,x_d = 0,0
@@ -1858,14 +1759,13 @@ def interp3olation_uni_multi(x,y,z,x_sample,y_sample,z_sample,grid) :
         else :
             x_u,x_d = wh_x[0],wh_x[0]-1
             c1 = (x-x_sample[x_d])/(x_sample[x_u]-x_sample[x_d])
-            #c2 = (x_sample[x_u]-x)/(x_sample[x_u]-x_sample[x_d])
-            c2 = 1.-c1
+            c2 = (x_sample[x_u]-x)/(x_sample[x_u]-x_sample[x_d])
 
     wh_y, = np.where(y_sample > y)
 
     if wh_y.size == 0 :
         y_u,y_d = y_sample.size-1,y_sample.size-1
-        c3,c4 = 0.,1.
+        c3,c4 = 1.,0.
     else :
         if wh_y[0] == 0 :
             y_u,y_d = 0,0
@@ -1873,14 +1773,13 @@ def interp3olation_uni_multi(x,y,z,x_sample,y_sample,z_sample,grid) :
         else :
             y_u,y_d = wh_y[0],wh_y[0]-1
             c3 = (y-y_sample[y_d])/(y_sample[y_u]-y_sample[y_d])
-            #c4 = (y_sample[y_u]-y)/(y_sample[y_u]-y_sample[y_d])
-            c4 = 1.-c3
+            c4 = (y_sample[y_u]-y)/(y_sample[y_u]-y_sample[y_d])
 
     wh_z, = np.where(z_sample > z)
 
     if wh_z.size == 0 :
         z_u,z_d = x_sample.size-1,x_sample.size-1
-        c5,c6 = 0.,1.
+        c5,c6 = 1.,0.
     else :
         if wh_z[0] == 0 :
             z_u,z_d = 0,0
@@ -1888,8 +1787,7 @@ def interp3olation_uni_multi(x,y,z,x_sample,y_sample,z_sample,grid) :
         else :
             z_u,z_d = wh_z[0],wh_z[0]-1
             c5 = (z-z_sample[z_d])/(z_sample[z_u]-z_sample[z_d])
-            #c6 = (z_sample[z_u]-Z)/(z_sample[z_u]-z_sample[z_d])
-            c6 = 1.-c5
+            c6 = (z_sample[z_u]-Z)/(z_sample[z_u]-z_sample[z_d])
 
     c_grid = np.array([c1,c2,c3,c4,c5,c6])
     i_grid = np.array([x_d,x_u,y_d,y_u,z_d,z_u])
@@ -1929,7 +1827,7 @@ def interp3olation_multi(x,y,z,x_sample,y_sample,z_sample,grid) :
 
         if wh_x.size == 0 :
             x_u,x_d = x_sample.size-1,x_sample.size-1
-            c1,c2 = 0.,1.
+            c1,c2 = 1.,0.
         else :
             if wh_x[0] == 0 :
                 x_u,x_d = 0,0
@@ -1937,14 +1835,13 @@ def interp3olation_multi(x,y,z,x_sample,y_sample,z_sample,grid) :
             else :
                 x_u,x_d = wh_x[0],wh_x[0]-1
                 c1 = (X-x_sample[x_d])/(x_sample[x_u]-x_sample[x_d])
-                #c2 = (x_sample[x_u]-X)/(x_sample[x_u]-x_sample[x_d])
-                c2 = 1.-c1
+                c2 = (x_sample[x_u]-X)/(x_sample[x_u]-x_sample[x_d])
 
         wh_y, = np.where(y_sample > Y)
 
         if wh_y.size == 0 :
             y_u,y_d = y_sample.size-1,y_sample.size-1
-            c3,c4 = 0.,1.
+            c3,c4 = 1.,0.
         else :
             if wh_y[0] == 0 :
                 y_u,y_d = 0,0
@@ -1952,14 +1849,13 @@ def interp3olation_multi(x,y,z,x_sample,y_sample,z_sample,grid) :
             else :
                 y_u,y_d = wh_y[0],wh_y[0]-1
                 c3 = (Y-y_sample[y_d])/(y_sample[y_u]-y_sample[y_d])
-                #c4 = (y_sample[y_u]-Y)/(y_sample[y_u]-y_sample[y_d])
-                c4 = 1.-c3
+                c4 = (y_sample[y_u]-Y)/(y_sample[y_u]-y_sample[y_d])
 
         wh_z, = np.where(z_sample > Z)
 
         if wh_z.size == 0 :
             z_u,z_d = x_sample.size-1,x_sample.size-1
-            c5,c6 = 0.,1.
+            c5,c6 = 1.,0.
         else :
             if wh_z[0] == 0 :
                 z_u,z_d = 0,0
@@ -1967,8 +1863,7 @@ def interp3olation_multi(x,y,z,x_sample,y_sample,z_sample,grid) :
             else :
                 z_u,z_d = wh_z[0],wh_z[0]-1
                 c5 = (Z-z_sample[z_d])/(z_sample[z_u]-z_sample[z_d])
-                #c6 = (z_sample[z_u]-Z)/(z_sample[z_u]-z_sample[z_d])
-                c6 = 1.-c5
+                c6 = (z_sample[z_u]-Z)/(z_sample[z_u]-z_sample[z_d])
 
         c_grid[i_x,:] = np.array([c1,c2,c3,c4,c5,c6])
         i_grid[i_x,:] = np.array([x_d,x_u,y_d,y_u,z_d,z_u])
@@ -1984,6 +1879,140 @@ def interp3olation_multi(x,y,z,x_sample,y_sample,z_sample,grid) :
 
     return res,c_grid,i_grid
 
+
+########################################################################################################################
+
+
+def interp2olation_opti_uni(x,y,x_sample,y_sample,grid,Optimal_x=False,Optimal_y=False) :
+
+    wh_x, = np.where(x_sample > x)
+
+    if Optimal_x == False :
+        if wh_x.size == 0 :
+            x_u,x_d = x_sample.size-1,x_sample.size-1
+            c1,c2 = 1.,0.
+        else :
+            if wh_x[0] == 0 :
+                x_u,x_d = 0,0
+                c1,c2 = 1.,0.
+            else :
+                x_u,x_d = wh_x[0],wh_x[0]-1
+                c1 = (x-x_sample[x_d])/(x_sample[x_u]-x_sample[x_d])
+                c2 = (x_sample[x_u]-x)/(x_sample[x_u]-x_sample[x_d])
+    else :
+        if wh_x.size == 0 :
+            x_u,x_d = x_sample.size-1,x_sample.size-1
+            c1a,c1b,c1c = 0.,1.,x
+        else :
+            if wh_x[0] == 0 :
+                x_u,x_d = 0,0
+                c1a,c1b,c1c = 0.,1.,x
+            else :
+                x_u,x_d = wh_x[0],wh_x[0]-1
+                c1a = (x_sample[x_u]*x_sample[x_d])/(x_sample[x_u]-x_sample[x_d])
+                c1b = x_sample[x_u]
+                c1c = x
+
+    wh_y, = np.where(y_sample > y)
+
+    if Optimal_y == False :
+        if wh_y.size == 0 :
+            y_u,y_d = y_sample.size-1,y_sample.size-1
+            c3,c4 = 1.,0.
+        else :
+            if wh_y[0] == 0 :
+                y_u,y_d = 0,0
+                c3,c4 = 1.,0.
+            else :
+                y_u,y_d = wh_y[0],wh_y[0]-1
+                c3 = (y-y_sample[y_d])/(y_sample[y_u]-y_sample[y_d])
+                c4 = (y_sample[y_u]-y)/(y_sample[y_u]-y_sample[y_d])
+    else :
+        if wh_y.size == 0 :
+            y_u,y_d = y_sample.size-1,y_sample.size-1
+            c3a,c3b,c3c = 0.,1.,y
+        else :
+            if wh_y[0] == 0 :
+                y_u,y_d = 0,0
+                c3a,c3b,c3c = 0.,1.,y
+            else :
+                y_u,y_d = wh_y[0],wh_y[0]-1
+                c3a = (y_sample[y_u]*y_sample[y_d])/(y_sample[y_u]-y_sample[y_d])
+                c3b = y_sample[y_u]
+                c3c = y
+
+    if Optimal_x == False and Optimal_y == False :
+        res_1 = c1*grid[x_u,y_u] + c2*grid[x_d,y_u]
+        res_2 = c1*grid[x_u,y_d] + c2*grid[x_d,y_d]
+        res = c3*res_1 + c4*res_2
+        c_grid = np.array([c1,c2,c3,c4])
+        i_grid = np.array([x_d,x_u,y_d,y_u])
+    else :
+        if Optimal_x == True and Optimal_y == False :
+            res_1 = c3*grid[x_u,y_u]+c4*grid[x_u,y_d]
+            res_2 = c3*grid[x_d,y_u]+c4*grid[x_d,y_d]
+            if res_2 != 0 :
+                c1aa = c1a*np.log(res_1/res_2)
+            else :
+                c1aa = 0.
+            c1bb = np.exp(c1aa/c1b)
+            res = res_1*c1bb*np.exp(-c1aa/c1c)
+            c_grid = np.array([c1a,c1b,c1c,c3,c4])
+            i_grid = np.array([x_d,x_u,y_d,y_u])
+        if Optimal_x == False and Optimal_y == True :
+            res_1 = c1*grid[x_u,y_u]+c2*grid[x_d,y_u]
+            res_2 = c1*grid[x_u,y_d]+c2*grid[x_d,y_d]
+            if res_2 != 0.00 :
+                c3aa = c3a*np.log(res_1/res_2)
+            else :
+                c3aa = 0.
+            c3bb = np.exp(c3aa/c3b)
+            res = res_1*c3bb*np.exp(-c3aa/c3c)
+            c_grid = np.array([c1,c2,c3a,c3b,c3c])
+            i_grid = np.array([x_d,x_u,y_d,y_u])
+        if Optimal_x == True and Optimal_y == True :
+            if grid[x_d,y_u] != 0.00 :
+                c1aa = c1a*np.log(grid[x_u,y_u]/grid[x_d,y_u])
+            else :
+                c1aa = 0.
+            c1bb = np.exp(c1aa/c1b)
+            res_1 = grid[x_u,y_u]*c1bb*np.exp(-c1aa/c1c)
+            if grid[x_d,y_d] != 0.00 :
+                c2aa = c1a*np.log(grid[x_u,y_d]/grid[x_d,y_d])
+            else :
+                c2aa = 0.
+            c2bb = np.exp(c1aa/c1b)
+            res_2 = grid[x_d,y_u]*c2bb*np.exp(-c2aa/c1c)
+            if res_2 != 0.00 :
+                c3aa = c3a*np.log(res_1/res_2)
+            else :
+                c3aa = 0.
+            c3bb = np.exp(c3aa/c3b)
+            res = res_1*c3bb*np.exp(-c3aa/c3c)
+            c_grid = np.array([c1a,c1b,c1c,c3a,c3b,c3c])
+            i_grid = np.array([x_d,x_u,y_d,y_u])
+
+    return res,c_grid,i_grid
+
+
+########################################################################################################################
+########################################################################################################################
+
+
+def vap_sat(T) :
+
+    T_0, r_2, r_3, r_4, P = 273.16, 661.14, np.array([17.269,21.875]), np.array([35.86,7.66]), 0.
+
+    if T > 647. :
+        P = 1.e+10
+    if T < 100. :
+        P = 0.
+    if T > T_0 and T <= 647. :
+        P = r_2*np.exp(r_3[0]*((T-T_0)/(T-r_4[0])))
+    if T > 100. and T <= T_0 :
+        P = r_2*np.exp(r_3[1]*((T-T_0)/(T-r_4[1])))
+
+    return P
 
 ########################################################################################################################
 ########################################################################################################################
@@ -2137,6 +2166,34 @@ def reverse(x) :
 ########################################################################################################################
 
 
+def reverse_dim(x,dim,dtyp) :
+    sh = np.shape(x)
+    size = sh[dim]
+    X = np.zeros((sh),dtype=dtyp)
+    if dim > 4 :
+        print 'Array too large to reverse'
+    else :
+        if dim == 0 :
+            for i in range(size) :
+                X[i] = x[size-i-1]
+        if dim == 1 :
+            for i in range(size) :
+                X[:,i] = x[:,size-i-1]
+        if dim == 2 :
+            for i in range(size) :
+                X[:,:,i] = x[:,:,size-i-1]
+        if dim == 3 :
+            for i in range(size) :
+                X[:,:,:,i] = x[:,:,:,size-i-1]
+        if dim == 4 :
+            for i in range(size) :
+                X[:,:,:,:,i] = x[:,:,:,:,size-i-1]
+    return X
+
+
+########################################################################################################################
+
+
 def dataread(data) :
     lines = data.readlines()
     u = np.shape(lines)
@@ -2206,3 +2263,305 @@ def nanarrsum(X,type) :
 
     return X_arr
 
+########################################################################################################################
+
+def H2HeO(cont_species) :
+
+    if cont_species.size <= 2 :
+        if cont_species[0] == 'H2' :
+            H2 = True
+            if cont_species.size == 2 :
+                if cont_species[1] == 'He' :
+                    He, Other = True, False
+                else :
+                    He, Other = False, True
+            else :
+                He, Other = False, False
+        else :
+            H2, He, Other = False, False, True
+    else :
+        if cont_species[0] == 'H2' :
+            H2 = True
+            if cont_species[1] == 'He' :
+                He = True
+            else :
+                He = False
+        else :
+            H2, He = False, False
+        Other = True
+
+    return H2, He, Other
+
+
+########################################################################################################################
+########################################################################################################################
+
+"""
+    PROFIL_CYLCART
+
+    Cette fonction transpose une ligne de la grille cartesienne dans la grille cylindrique et produit un profil de
+    transmittance. A partir de ce profil (qui est construit par estimation de la position des points de variations
+    de la transmittance) elle genere un tableau aux dimensions necessaires pour remplir la zone de transmittance
+    associee a l'atmosphere dans la grille cartesienne. Elle realise ces profils de chaque cote de la planete. L'
+    interpolation utilisee est ici lineaire mais peut etre modifiee.
+
+    La fonction retourne les deux tableaux a coller dans la grille cartesienne pour chaque cote de l'hemisphere. Cette
+    technique permet d'interpoler la grille cylindrique sans en augmenter la resolution.
+
+"""
+
+########################################################################################################################
+########################################################################################################################
+
+
+def profil_cylcart(I,Rp,h,B,r_step,theta_step,theta_number,param,pas,Climu,Climd) :
+
+    X_u = np.arange(Climd,Climu + param, param)
+    X_d = np.arange(-Climu,-Climd+param, param)
+
+    x_slice = np.arange(0,h,pas)
+
+    if abs(B) < Rp :
+        lim_ud = np.sqrt(Rp**2 - B**2)
+    else :
+        lim_ud = 0
+
+    I_ref_u = np.array([])
+    x_ref_u = np.array([])
+    pond_u = np.array([])
+    I_ref_d = np.array([])
+    x_ref_d = np.array([])
+    pond_d = np.array([])
+    i = 0
+
+    for x in x_slice :
+
+        C_u = lim_ud + x
+        theta_u = math.atan2(B,C_u)
+
+        if theta_u >= 0 :
+
+            i_theta_u = int(round(theta_u/theta_step))
+            theta_d = np.pi - theta_u
+            i_theta_d = int(round(theta_d/theta_step))
+
+            if i_theta_u == theta_number :
+                i_theta_u = 0
+
+            if i_theta_d == theta_number :
+                i_theta_d = 0
+
+        if theta_u < 0 :
+
+            i_theta_u = theta_number + int(round(theta_u/theta_step))
+            theta_d = - np.pi - theta_u
+            i_theta_d = theta_number + int(round(theta_d/theta_step))
+
+            if i_theta_u == theta_number :
+                i_theta_u = 0
+
+            if i_theta_d == theta_number :
+                i_theta_d = 0
+
+        if x == 0 :
+            i_z = 0
+        else :
+            i_z = int(round((np.sqrt((lim_ud+x)**2 + B**2) - Rp)/float(r_step)))
+
+        if x == x_slice[0] :
+
+            i_theta_comp_u = i_theta_u
+            i_theta_comp_d = i_theta_d
+
+            i_z_comp_u = i_z
+            i_z_comp_d = i_z
+
+            deb_u = 0
+            deb_d = 0
+
+        else :
+
+            if i_theta_u != i_theta_comp_u or i_z != i_z_comp_u :
+
+                fin_u = i
+
+                I_ref_u = np.append(I_ref_u, np.array(I[i_theta_comp_u,i_z_comp_d]))
+                x_ref_u = np.append(x_ref_u, np.array(lim_ud + x_slice[int((fin_u+deb_u)/2.)]))
+                pond_u = np.append(pond_u, np.array([fin_u - deb_u + 1]))
+
+                deb_u = i + 1
+
+                i_theta_comp_u = i_theta_u
+                i_z_comp_u = i_z
+
+            if i_theta_d != i_theta_comp_d or i_z != i_z_comp_d :
+
+                fin_d = i
+
+                I_ref_d = np.append(I_ref_d, np.array(I[i_theta_comp_d,i_z_comp_d]))
+                x_ref_d = np.append(x_ref_d, np.array(-lim_ud - x_slice[int((fin_d+deb_d)/2.)]))
+                pond_d = np.append(pond_d, np.array([fin_d - deb_d + 1]))
+
+                deb_d = i + 1
+
+                i_theta_comp_d = i_theta_d
+                i_z_comp_d = i_z
+
+
+        i = i + 1
+
+    I_table_u = np.interp(X_u,x_ref_u,I_ref_u)
+    I_table_d = np.interp(-X_d,-x_ref_d,I_ref_d)
+
+    return I_table_d,I_table_u
+
+
+########################################################################################################################
+
+
+def create_circle(x,R) :
+
+    wh1, =np.where((x <= 0)*(x >= -R))
+    wh2, =np.where((x <= R)*(x >= 0))
+
+    y_cir = np.array([0])
+    y_cir = np.append(y_cir,-np.sqrt(R**2 - x[wh1]**2))
+    y_cir = np.append(y_cir,np.array([-R]))
+    y_cir = np.append(y_cir,-np.sqrt(R**2 - x[wh2]**2))
+    y_cir = np.append(y_cir,np.array([0]))
+    y_cir = np.append(y_cir,np.sqrt(R**2 - x[wh2[::-1]]**2))
+    y_cir = np.append(y_cir,np.array([R]))
+    y_cir = np.append(y_cir,np.sqrt(R**2 - x[wh1[::-1]]**2))
+    y_cir = np.append(y_cir,np.array([0]))
+
+    x_cir = np.array([-R])
+    x_cir = np.append(x_cir,x[wh1])
+    x_cir = np.append(x_cir,np.array([0]))
+    x_cir = np.append(x_cir,x[wh2])
+    x_cir = np.append(x_cir,np.array([R]))
+    x_cir = np.append(x_cir,x[wh2[::-1]])
+    x_cir = np.append(x_cir,np.array([0]))
+    x_cir = np.append(x_cir,x[wh1[::-1]])
+    x_cir = np.append(x_cir,np.array([-R]))
+
+    return x_cir,y_cir
+
+
+########################################################################################################################
+########################################################################################################################
+
+"""
+    INSTRUMENTATION
+
+    Les fonctions ci-dessous permettent de generer du bruit de photon ou de l'estimer pour construire des barres d'
+    erreur associees a un instrument specifique. Les instruments sont des classes qui doivent avoir la meme structure
+    que JWST.
+
+"""
+
+########################################################################################################################
+########################################################################################################################
+
+
+def stellar_noise(star,detection,gamme,resolution,Total=False) :
+
+    R, T, d = star.radius, star.temperature, star.distance
+    tau, D, delta_t, bande = detection.tau, detection.diameter, detection.integration, detection.bande
+    sh_b = np.shape(bande)
+    if resolution != '' :
+        if resolution == 'low' :
+            reso = detection.resolution_low
+        if resolution == 'medium' :
+            reso = detection.resolution_medium
+        if resolution == 'high' :
+            reso = detection.resolution_high
+        b_size = gamme.size
+    else :
+        b_size = gamme[0].size
+    noise = np.zeros((b_size))
+
+    for i_bande in range(b_size) :
+        if resolution == '' :
+            if gamme[0,i_bande] >= bande[0,0] and gamme[1,i_bande] <= bande[sh_b[0]-1,1]:
+                i_t = 0
+                if gamme[0,i_bande] <= bande[sh_b[0]-1,0] :
+                    while gamme[0,i_bande] > bande[i_t,0] :
+                        i_t += 1
+                else :
+                    i_t = bande[:,0].size
+                if gamme[0,i_bande] >= bande[i_t-1,0] and gamme[1,i_bande] <= bande[i_t-1,1] :
+
+                    fac = np.pi**2*tau[i_t-1]*delta_t*c*R**2*D[i_t-1]**2/(2*d**2)
+                    N_phot = integrate.quad(lambda wl:fac*1/(wl**4*(np.exp(h_P*c/(k_B*wl*T))-1)),gamme[0,i_bande]*1.e-6,gamme[1,i_bande]*1.e-6)
+                    noise[i_bande] = 1./np.sqrt(N_phot[0])
+                else :
+                    noise[i_bande] = 'nan'
+            else :
+                noise[i_bande] = 'nan'
+        else :
+            if gamme[i_bande] >= bande[0,0] and gamme[i_bande] <= bande[sh_b[0]-1,1]:
+                i_t = 0
+                if gamme[i_bande] <= bande[sh_b[0]-1,0] :
+                    while gamme[i_bande] > bande[i_t,0] :
+                        i_t += 1
+                else :
+                    i_t = bande[:,0].size
+                if gamme[i_bande] >= bande[i_t-1,0] and gamme[i_bande] <= bande[i_t-1,1] :
+
+                    fac = np.pi**2*tau[i_t-1]*delta_t*c*R**2*D[i_t-1]**2/(2*d**2)
+                    lam = gamme[i_bande]
+                    delta_lam = lam/reso[i_t-1]
+                    lam_1,lam_2 = lam - delta_lam/2.,lam +delta_lam/2.
+                    N_phot = integrate.quad(lambda wl:fac*1/(wl**4*(np.exp(h_P*c/(k_B*wl*T))-1)),lam_1*1.e-6,lam_2*1.e-6)
+                    noise[i_bande] = 1./np.sqrt(N_phot[0])
+                else :
+                    noise[i_bande] = 'nan'
+            else :
+                noise[i_bande] = 'nan'
+
+    if Total == True :
+        for i_b in range(sh_b[0]) :
+            fac = np.pi**2*tau[i_b]*delta_t*c*R**2*D[i_b]**2/(2*d**2)
+            N_phot = integrate.quad(lambda wl:fac*1./(wl**4*(np.exp(h_P*c/(k_B*wl*T))-1)),bande[i_b,0]*1.e-6,bande[i_b,1]*1.e-6)
+
+    return noise
+
+
+########################################################################################################################
+
+
+class JWST :
+    def __init__(self):
+        self.diameter = np.array([6.5,6.5,6.5,6.5,6.5,6.5])
+        self.integration = 8600.
+        self.bande = np.array([[0.6,1.6],[1.6,3.],[3.,5.],[5.,10.5],[10.5,16.],[16.,27.5]])
+        #self.tau = np.array([0.30,0.40,0.40,0.36,0.36,0.18])
+        self.tau = np.array([0.30,0.30,0.30,0.30,0.30,0.30])
+        self.resolution_high = np.array([3500.,3500.,3500.,2400.,1600.,800.])
+        #self.resolution_medium = np.array([1000.,1000.,1000.,2400.,1600.,800.])
+        #self.resolution_low = np.array([100.,100.,100.,100.,1600.,800.])
+        self.resolution_medium = np.array([1000.,1000.,1000.,1000.,1000.,1000.])
+        self.resolution_low = np.array([100.,100.,100.,100.,100.,100.])
+
+
+########################################################################################################################
+
+
+class planet :
+    def __init__(self):
+        self.pressure_profile_data = '/data1/caldas/Output_mol_500/Output_0.05_140.00_500/SPECTRUM_INSTANCE_out.pickle'
+        self.planet_radius_key = 'planet_radius'
+        self.planet_mass_key = 'planet_mass'
+        self.star_radius_key = 'star_radius'
+        self.star_temperature_key = 'star_temp'
+        self.pressure_profile_key = 'temperature_profile'
+        self.planet_active_ratio_key = 'atm_active_gases_mixratios'
+        self.planet_temperature_key = 'atm_tp_iso_temp'
+        self.extreme_pressure_key = np.array(['atm_max_pres','atm_min_pres'])
+        self.number_layer_key = 'atm_nlayers'
+        self.active_species_key = 'atm_active_gases'
+        self.hidrogen = True
+        self.latitude = 48
+        self.longitude = 64
+
+########################################################################################################################
